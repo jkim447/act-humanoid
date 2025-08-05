@@ -5,9 +5,9 @@ DATA_DIR = '<put your data dir here>'
 SIM_TASK_CONFIGS = {
     'sim_transfer_cube_scripted':{
         'dataset_dir': DATA_DIR + '/sim_transfer_cube_scripted',
-        'num_episodes': 50,
+        'num_episodes': 35,
         'episode_len': 400,
-        'camera_names': ['top']
+        'camera_names': ['left', 'right']
     },
 
     'sim_transfer_cube_human':{
