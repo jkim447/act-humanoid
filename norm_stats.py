@@ -26,6 +26,7 @@ def compute_delta_action_norm_stats_from_dirs(
     norm_stats : dict with float32 numpy arrays
     """
     action_list = []
+    qpos_list = []    
 
     for demo_dir in ds.episode_dirs:
         csv_path = os.path.join(demo_dir, "ee_pos", "ee_poses_and_hands.csv")
@@ -38,8 +39,11 @@ def compute_delta_action_norm_stats_from_dirs(
 
         for s in range(T):
             anchor_vec   = ds._row_to_action(df.iloc[s])           # (A,)
+            qpos_list.append(anchor_vec.astype(np.float32))     # NEW
+
             left_anchor  = anchor_vec[0:3]
-            right_anchor = anchor_vec[9:12]
+            # TODO: restore these lines for bimanual
+            # right_anchor = anchor_vec[9:12] 
 
             end_ts = min(s + chunk_size * stride, T)               # exclusive
             for t in range(s, end_ts, stride):
@@ -47,23 +51,28 @@ def compute_delta_action_norm_stats_from_dirs(
 
                 # relative translation
                 row_vec[0:3]  -= left_anchor
-                row_vec[9:12] -= right_anchor
+                # TODO: restore these lines for bimanual
+                # row_vec[9:12] -= right_anchor
 
                 action_list.append(row_vec.astype(np.float32))
 
     if not action_list:
         raise ValueError("No actions collected — check dataset paths.")
 
-    actions_np   = np.vstack(action_list)          # (N_total, A)
-    action_mean  = actions_np.mean(axis=0)
-    action_std   = actions_np.std(axis=0, ddof=1)
-    action_std   = np.clip(action_std, a_min=eps, a_max=None)
+    actions_np   = np.vstack(action_list)   # (N_total, A)
+    action_mean  = actions_np.mean(axis=0).astype(np.float32)
+    action_std   = np.clip(actions_np.std(axis=0, ddof=1), a_min=eps, a_max=None).astype(np.float32)
+
+    # NEW: qpos stats
+    qpos_np    = np.vstack(qpos_list)       # (N_qpos, A)
+    qpos_mean  = qpos_np.mean(axis=0).astype(np.float32)
+    qpos_std   = np.clip(qpos_np.std(axis=0, ddof=1), a_min=eps, a_max=None).astype(np.float32)
 
     norm_stats = {
-        "action_mean": action_mean.astype(np.float32),
-        "action_std":  action_std.astype(np.float32),
-        "qpos_mean":   np.zeros_like(action_mean, dtype=np.float32),
-        "qpos_std":    np.ones_like(action_mean,  dtype=np.float32),
+        "action_mean": action_mean,
+        "action_std":  action_std,
+        "qpos_mean":   qpos_mean,
+        "qpos_std":    qpos_std,
     }
 
     # ---- optional save ----
@@ -84,14 +93,14 @@ def compute_delta_action_norm_stats_from_dirs(
 
     # ---- optional literal ----
     if print_literal:
-        am, sd = norm_stats["action_mean"].tolist(), norm_stats["action_std"].tolist()
-        qm, qs = norm_stats["qpos_mean"].tolist(),  norm_stats["qpos_std"].tolist()
-        print(f"{var_name} = {{")
-        print(f"    'action_mean': np.array({am}, dtype=np.float32),")
-        print(f"    'action_std':  np.array({sd}, dtype=np.float32),")
-        print(f"    'qpos_mean':   np.array({qm}, dtype=np.float32),")
-        print(f"    'qpos_std':    np.array({qs}, dtype=np.float32),")
-        print("}")
+            am, sd = norm_stats["action_mean"].tolist(), norm_stats["action_std"].tolist()
+            qm, qs = norm_stats["qpos_mean"].tolist(),  norm_stats["qpos_std"].tolist()
+            print(f"{var_name} = {{")
+            print(f"    'action_mean': np.array({am}, dtype=np.float32),")
+            print(f"    'action_std':  np.array({sd}, dtype=np.float32),")
+            print(f"    'qpos_mean':   np.array({qm}, dtype=np.float32),")
+            print(f"    'qpos_std':    np.array({qs}, dtype=np.float32),")
+            print("}")
 
     return norm_stats
 

@@ -132,6 +132,7 @@ class GalaxeaDataset(torch.utils.data.Dataset):
         image_data = image_data / 255.0
         if self.normalize:
             action_data = (action_data - norm_stats["action_mean"]) / norm_stats["action_std"]
+            qpos_data   = (qpos_data   - norm_stats["qpos_mean"])   / norm_stats["qpos_std"]  # NEW
 
         return image_data, qpos_data, action_data, is_pad
 ##################################################################
@@ -146,13 +147,14 @@ class GalaxeaDataset(torch.utils.data.Dataset):
 # # Create dataset (relative positions, no normalization yet)
 # ds = GalaxeaDataset(dataset_dir=dataset_dir, chunk_size=45, apply_data_aug = True, normalize=False)
 
+# # TODO!!!!!!! Check that normalization is implemented as you want it!!! right now it's implemented as a single arm, not bimanual
 # from norm_stats import compute_delta_action_norm_stats_from_dirs
 # compute_delta_action_norm_stats_from_dirs(
 #     ds,
 #     chunk_size=45,
-#     # stride=2,
+#     stride=2,
 #     out_path="norm_stats_galaxea_delta.npz",
-#     print_literal=False
+#     print_literal=True
 # )
 
 #################################################################

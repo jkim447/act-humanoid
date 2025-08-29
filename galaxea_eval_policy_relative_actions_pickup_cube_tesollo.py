@@ -23,9 +23,11 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D   # noqa: F401  ̶k̶e̶e̶p̶s̶ ̶3̶D̶ ̶p̶r̶o̶j̶e̶c̶t̶i̶o̶n̶ ̶r̶e̶g̶i̶s̶t̶e̶r̶e̶d̶
 from scipy.spatial.transform import Rotation as R
 
-image_path_l = "/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo60/left/000150.jpg"
-image_path_r = "/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo60/right/000150.jpg"
-csv_path = "/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo60/ee_pos/ee_poses_and_hands.csv"
+demo = 20
+idx = 150
+image_path_l = f"/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo{demo}/left/000{idx}.jpg"
+image_path_r = f"/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo{demo}/right/000{idx}.jpg"
+csv_path = f"/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo{demo}/ee_pos/ee_poses_and_hands.csv"
 # Hard-coded frame index from the filename (000150.jpg -> 150)
 TS = int(os.path.splitext(os.path.basename(image_path_l))[0])
 norm_stats = np.load("norm_stats_galaxea_delta.npz")
@@ -119,9 +121,10 @@ def plot_left_wrist_trajectory(pred_actions: torch.Tensor,
     # ground-truth left positions from CSV, aligned to the same stride (step=2)
     df = pd.read_csv(csv_path)
     T = dleft.shape[0]
-    end = min(ts + 2 * T, len(df))
-    gt_rows = df.iloc[ts:end:2]  # <= length may be <= T if we hit the end
+    end = min(ts + T, len(df))   # only advance T steps, not 2*T
+    gt_rows = df.iloc[ts:end]
     gt_left = gt_rows[["left_pos_x", "left_pos_y", "left_pos_z"]].to_numpy()
+    print(gt_left)
 
     # base left wrist pose at ts
     base_left = df.iloc[ts][["left_pos_x", "left_pos_y", "left_pos_z"]].to_numpy(dtype=float)
@@ -139,6 +142,7 @@ def plot_left_wrist_trajectory(pred_actions: torch.Tensor,
     ax = fig.add_subplot(111, projection='3d')
     ax.set_title("Left Wrist Trajectory (GT vs Pred)")
     ax.scatter(gt_left[:, 0], gt_left[:, 1], gt_left[:, 2], label="GT Left", s=20)
+    print(gt_left.shape)
     ax.scatter(pred_left_abs[:, 0], pred_left_abs[:, 1], pred_left_abs[:, 2], label="Pred Left", marker='^', s=20)
     ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
     ax.legend()
@@ -172,6 +176,12 @@ def eval_act(config, ckpt_name, save_episode=True):
         # See this function (build_left_qpos_from_csv()) to see how to build a 6d rot, very simple 
         qpos_numpy = build_left_qpos_from_csv(csv_path, TS)
         qpos = torch.from_numpy(qpos_numpy).float().cuda().unsqueeze(0)
+        # Note, qpos also requires its own normalization now
+        qpos_mean = torch.as_tensor(norm_stats["qpos_mean"], device=qpos.device, dtype=qpos.dtype)
+        qpos_std  = torch.as_tensor(norm_stats["qpos_std"],  device=qpos.device, dtype=qpos.dtype)
+        print(qpos.shape, qpos_mean.shape)
+        qpos = (qpos - qpos_mean) / qpos_std
+
 
         all_actions = policy(qpos, curr_image)
 
