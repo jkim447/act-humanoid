@@ -1,6 +1,6 @@
 """
 usage:
-python3 galaxea_eval_policy_relative_actions.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --kl_weight 10 --hidden_dim 512 --dim_feedforward 3200  --lr 1e-5 --seed 0 --policy_class ACT --num_epochs 1 --num_queries 45
+python3 galaxea_eval_policy_relative_actions_pose_traj.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --kl_weight 10 --hidden_dim 512 --dim_feedforward 3200  --lr 1e-5 --seed 0 --policy_class ACT --num_epochs 1 --num_queries 45
 """
 
 import os
@@ -22,6 +22,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D   # noqa: F401  ̶k̶e̶e̶p̶s̶ ̶3̶D̶ ̶p̶r̶o̶j̶e̶c̶t̶i̶o̶n̶ ̶r̶e̶g̶i̶s̶t̶e̶r̶e̶d̶
 from scipy.spatial.transform import Rotation as R
+from pytransform3d.trajectories import plot_trajectory  # pip install pytransform3d
 
 image_path_l = "/iris/projects/humanoid/dataset/recordstart_2025-07-09_22-26-20/Demo1/left/000001.jpg"
 image_path_r = "/iris/projects/humanoid/dataset/recordstart_2025-07-09_22-26-20/Demo1/right/000001.jpg"
@@ -30,6 +31,110 @@ norm_stats = np.load("norm_stats_galaxea_delta.npz")
 ckpt_name = "policy_last_relative_08052025.ckpt"
 # ckpt_name = "policy_last.ckpt"
 camera_names = ['left', 'right']  # Assuming both cameras are used
+
+df = pd.read_csv(csv_path)
+gt_rows = df.iloc[0:90:2]
+
+def _xyzw_to_wxyz(q_xyzw: np.ndarray) -> np.ndarray:
+    """Re-order quaternion columns from (x y z w) → (w x y z)."""
+    return np.concatenate([q_xyzw[:, 3:4], q_xyzw[:, 0:3]], axis=1)
+
+def plot_pose_trajectories(gt_rows: pd.DataFrame,
+                           pred_left_pos: np.ndarray,  pred_left_q_xyzw: np.ndarray,
+                           pred_right_pos: np.ndarray, pred_right_q_xyzw: np.ndarray,
+                           save_path: str = "pose_trajectories.png") -> None:
+    """Side-by-side view: GT (left) vs. prediction (right)."""
+    # ── ground truth ────────────────────────────────────────────────────────────
+    gt_left_pos  = gt_rows[["left_pos_x",  "left_pos_y",  "left_pos_z"]].to_numpy()
+    gt_left_q    = gt_rows[["left_ori_x","left_ori_y","left_ori_z","left_ori_w"]].to_numpy()
+    gt_right_pos = gt_rows[["right_pos_x","right_pos_y","right_pos_z"]].to_numpy()
+    gt_right_q   = gt_rows[["right_ori_x","right_ori_y","right_ori_z","right_ori_w"]].to_numpy()
+
+    P_gt_left   = np.hstack([gt_left_pos,  _xyzw_to_wxyz(gt_left_q)])
+    P_gt_right  = np.hstack([gt_right_pos, _xyzw_to_wxyz(gt_right_q)])
+
+    # ── predictions ─────────────────────────────────────────────────────────────
+    P_pred_left  = np.hstack([pred_left_pos,  _xyzw_to_wxyz(pred_left_q_xyzw)])
+    P_pred_right = np.hstack([pred_right_pos, _xyzw_to_wxyz(pred_right_q_xyzw)])
+
+    # ── common axis limits (unchanged) ──────────────────────────────────────────
+    offset = (0.01, -0.01)
+    xlim   = (0.34 + offset[0], 0.38 + offset[1])
+    ylim   = (-0.10 + offset[0], 0.30 + offset[1])
+    zlim   = (0.00, 0.12)           # no offset here
+    size = 0.002  # marker size you used before
+
+    # ── plotting ───────────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(10, 5))
+
+    # left subplot: ground-truth -------------------------------------------------
+    ax_gt = fig.add_subplot(121, projection="3d")
+    plot_trajectory(ax=ax_gt, P=P_gt_left,  color="C0",
+                    show_direction=False, s=size)
+    plot_trajectory(ax=ax_gt, P=P_gt_right, color="C1",
+                    show_direction=False, s=size)
+    ax_gt.set_xlim(*xlim); ax_gt.set_ylim(*ylim); ax_gt.set_zlim(*zlim)
+    ax_gt.set_box_aspect([1, 1, 1])
+    ax_gt.set_title("Ground-truth")
+
+    # right subplot: prediction --------------------------------------------------
+    ax_pr = fig.add_subplot(122, projection="3d")
+    plot_trajectory(ax=ax_pr, P=P_pred_left,  color="C0",
+                    show_direction=False, s=size, alpha=0.7)
+    plot_trajectory(ax=ax_pr, P=P_pred_right, color="C1",
+                    show_direction=False, s=size, alpha=0.7)
+    ax_pr.set_xlim(*xlim); ax_pr.set_ylim(*ylim); ax_pr.set_zlim(*zlim)
+    ax_pr.set_box_aspect([1, 1, 1])
+    ax_pr.set_title("Policy prediction")
+
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=300)
+    print(f"Pose trajectory figure saved → {save_path}")
+
+# def plot_pose_trajectories(gt_rows: pd.DataFrame,
+#                            pred_left_pos: np.ndarray,  pred_left_q_xyzw: np.ndarray,
+#                            pred_right_pos: np.ndarray, pred_right_q_xyzw: np.ndarray,
+#                            save_path: str = "pose_trajectories.png") -> None:
+#     """Visualise GT vs. policy poses with pytransform3d – all curves in one plot."""
+#     # ── ground truth ────────────────────────────────────────────────────────────
+#     gt_left_pos  = gt_rows[["left_pos_x",  "left_pos_y",  "left_pos_z"]].to_numpy()
+#     gt_left_q    = gt_rows[["left_ori_x","left_ori_y","left_ori_z","left_ori_w"]].to_numpy()
+#     gt_right_pos = gt_rows[["right_pos_x","right_pos_y","right_pos_z"]].to_numpy()
+#     gt_right_q   = gt_rows[["right_ori_x","right_ori_y","right_ori_z","right_ori_w"]].to_numpy()
+
+#     P_gt_left   = np.hstack([gt_left_pos,  _xyzw_to_wxyz(gt_left_q)])
+#     P_gt_right  = np.hstack([gt_right_pos, _xyzw_to_wxyz(gt_right_q)])
+
+#     # ── predictions ─────────────────────────────────────────────────────────────
+#     P_pred_left  = np.hstack([pred_left_pos,  _xyzw_to_wxyz(pred_left_q_xyzw)])
+#     P_pred_right = np.hstack([pred_right_pos, _xyzw_to_wxyz(pred_right_q_xyzw)])
+
+#     # ── plotting ───────────────────────────────────────────────────────────────
+#     fig = plt.figure(figsize=(7, 6))
+#     ax  = fig.add_subplot(111, projection="3d")
+
+#     # plot_trajectory(ax=ax, P=P_gt_left,   color="C0", label="GT left",
+#     #                 show_direction=False, s=0.04)
+#     # plot_trajectory(ax=ax, P=P_pred_left, color="C0", label="Pred left",
+#     #                 show_direction=False, s=0.04, alpha=0.6, linestyle="--")
+
+#     size = 0.002
+#     plot_trajectory(ax=ax, P=P_gt_right,   color="C1", #label="GT right",
+#                     show_direction=False, s=size)
+#     plot_trajectory(ax=ax, P=P_pred_right, color="C1", #label="Pred right",
+#                     show_direction=False, s=size, alpha=0.6, linestyle="--")
+
+#     # lock axes to the unit cube
+#     ax.set_xlim(0.34, 0.38)
+#     ax.set_ylim(-0.1, 0.3)
+#     ax.set_zlim(0, 0.12)
+#     ax.set_box_aspect([1, 1, 1])  # equal scale on x, y, z
+
+#     ax.set_title("Wrist pose trajectories")
+#     # ax.legend()
+#     plt.tight_layout()
+#     fig.savefig(save_path, dpi=300)
+#     print(f"Pose trajectory figure saved → {save_path}")
 
 # def rot6d_to_quat_xyzw(rot6d: np.ndarray, eps: float = 1e-8) -> np.ndarray:
 #     """
@@ -49,6 +154,7 @@ camera_names = ['left', 'right']  # Assuming both cameras are used
 #     R_mats = np.stack([a, b, c], axis=2)      # [T, 3, 3]
 #     quats_xyzw = R.from_matrix(R_mats).as_quat()  # xyzw
 #     return quats_xyzw
+
 
 def rot6d_to_quat_xyzw(rot6d: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """
@@ -84,56 +190,6 @@ def rot6d_to_quat_xyzw(rot6d: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     quats_xyzw = R.from_matrix(R_mats).as_quat()
     return quats_xyzw
 
-def plot_wrist_trajectories(pred_actions: torch.Tensor,
-                            csv_path: str,
-                            save_path: str = "wrist_trajectories.png"):
-    """
-    pred_actions now encodes *relative* position deltas for wrists.
-    This function adds those deltas to the current wrist pose from the CSV
-    to get absolute positions for plotting.
-    """
-    # ---------------- predicted deltas -------------------
-    pred_np = pred_actions.squeeze(0).cpu().numpy()      # [45, 30]
-    dleft  = pred_np[:, 0:3]                             # Δx, Δy, Δz for left wrist
-    dright = pred_np[:, 9:12]                            # Δx, Δy, Δz for right wrist
-
-    # ---------------- ground-truth positions -------------
-    df = pd.read_csv(csv_path)
-
-    # rows 0..88 step 2  →  45 rows (matches evaluation stride)
-    gt_rows = df.iloc[0:90:2]
-    gt_left  = gt_rows[["left_pos_x",  "left_pos_y",  "left_pos_z"]].to_numpy()
-    gt_right = gt_rows[["right_pos_x", "right_pos_y", "right_pos_z"]].to_numpy()
-
-    # current wrist pose at the start of the chunk (same reference used for GT above)
-    base_left  = df.iloc[0][["left_pos_x",  "left_pos_y",  "left_pos_z"]].to_numpy(dtype=float)
-    base_right = df.iloc[0][["right_pos_x", "right_pos_y", "right_pos_z"]].to_numpy(dtype=float)
-
-    # convert deltas → absolute predictions
-    pred_left_abs  = dleft  + base_left[None, :]
-    pred_right_abs = dright + base_right[None, :]
-
-    # ---------------- 3-D plot ---------------------------
-    fig = plt.figure(figsize=(7, 6))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_title("Left & Right Wrist Trajectories")
-
-    # left-wrist points
-    ax.scatter(gt_left[:,0],  gt_left[:,1],  gt_left[:,2],  label="GT Left",  s=20)
-    ax.scatter(pred_left_abs[:,0], pred_left_abs[:,1], pred_left_abs[:,2],
-               label="Pred Left", marker='^', s=20)
-
-    # right-wrist points
-    ax.scatter(gt_right[:,0],  gt_right[:,1],  gt_right[:,2], label="GT Right", s=20)
-    ax.scatter(pred_right_abs[:,0], pred_right_abs[:,1], pred_right_abs[:,2],
-               label="Pred Right", marker='^', s=20)
-
-    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-    ax.legend()
-    plt.tight_layout()
-    fig.savefig(save_path, dpi=300)
-    plt.close(fig)
-    print(f"Saved 3-D trajectory plot → {save_path}")
 
 def make_policy(policy_config):
     policy = ACTPolicy(policy_config)
@@ -193,17 +249,20 @@ def eval_act(config, ckpt_name, save_episode=True):
 
         pred_actions = all_actions * action_std + action_mean
         
-        # visualize output, uncomment if needed
-        plot_wrist_trajectories(pred_actions, csv_path, save_path="wrist_trajectories.jpg")
-        
          # ---------------- predicted deltas -------------------
         pred_np = pred_actions.squeeze(0).cpu().numpy()      # [45, 30]
         dleft  = pred_np[:, 0:3]                             # Δx, Δy, Δz for left wrist
         dright = pred_np[:, 9:12]                            # Δx, Δy, Δz for right wrist
 
         # TODO @Ke, replace below lines with actual wrist positions from the robot
-        current_wrist_left = np.zeros((3,), dtype=np.float32)
-        current_wrist_right = np.zeros((3,), dtype=np.float32)
+        # use the very first sample in gt_rows as the “current” wrist pose
+        current_wrist_left = gt_rows.iloc[0][
+            ["left_pos_x", "left_pos_y", "left_pos_z"]
+        ].to_numpy(dtype=np.float32)
+
+        current_wrist_right = gt_rows.iloc[0][
+            ["right_pos_x", "right_pos_y", "right_pos_z"]
+        ].to_numpy(dtype=np.float32)
 
 
         # TODO @KE, publish pred_left_wrist and pred_right_wrist to the robot for their wrist trajectories
@@ -220,6 +279,13 @@ def eval_act(config, ckpt_name, save_episode=True):
         left_quat_xyzw  = rot6d_to_quat_xyzw(left_rot6d)   # [T, 4]
         right_quat_xyzw = rot6d_to_quat_xyzw(right_rot6d)  # [T, 4]
         print(left_quat_xyzw.shape, right_quat_xyzw.shape)
+
+        plot_pose_trajectories(
+            gt_rows,                     # already defined earlier
+            pred_left_wrist,  left_quat_xyzw,
+            pred_right_wrist, right_quat_xyzw,
+            save_path="pose_trajectories.png"
+        )
 
 
 if __name__ == '__main__':

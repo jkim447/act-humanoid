@@ -3,7 +3,7 @@ import torch
 import os
 import h5py
 from torch.utils.data import TensorDataset, DataLoader
-from galaxea_dataset import GalaxeaDataset
+from galaxea_dataset_pick_cube import GalaxeaDataset
 
 import IPython
 e = IPython.embed
@@ -124,10 +124,10 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     # construct dataset and dataloader
     # train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
     # val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
-    dataset_dir = "/iris/projects/humanoid/dataset/recordstart_2025-07-09_22-26-20"
+    dataset_dir = "/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube"
     # make sure normalize is set to False, so that we get raw action values from the dataset
-    train_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, normalize=True)
-    val_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, normalize=True)
+    train_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=True, normalize=True)
+    val_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=False, normalize=True)
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)

@@ -20,6 +20,8 @@ class GalaxeaDataset(torch.utils.data.Dataset):
         self.apply_data_aug = apply_data_aug
         self.img_height = 224
         self.img_width  = 224
+        # hard-coded left-hand joint names
+        self.left_hand_cols = [f"left_hand_{i}" for i in range(20)]
 
         # collect demo folders: Demo1, Demo2, ..., DemoN
         def _demo_key(name):
@@ -58,22 +60,14 @@ class GalaxeaDataset(torch.utils.data.Dataset):
         # Left wrist position (3)
         a = [row["left_pos_x"], row["left_pos_y"], row["left_pos_z"]]
 
-        # Left wrist orientation (quat -> 6D)
+        # Left wrist orientation (quat → 6D)
         lq = [row["left_ori_x"], row["left_ori_y"], row["left_ori_z"], row["left_ori_w"]]
         lR = R.from_quat(lq).as_matrix()
-        a.extend(lR[:, :2].reshape(-1).tolist())
+        a.extend(lR[:, :2].reshape(-1).tolist())  # 6D orientation
 
-        # Right wrist position (3)
-        a.extend([row["right_pos_x"], row["right_pos_y"], row["right_pos_z"]])
+        # Left hand joints (20)
+        a.extend([row[c] for c in self.left_hand_cols])
 
-        # Right wrist orientation (quat -> 6D)
-        rq = [row["right_ori_x"], row["right_ori_y"], row["right_ori_z"], row["right_ori_w"]]
-        rR = R.from_quat(rq).as_matrix()
-        a.extend(rR[:, :2].reshape(-1).tolist())
-
-        # Left and right hand (6 + 6)
-        a.extend([row[f"left_hand_{i}"] for i in range(6)])
-        a.extend([row[f"right_hand_{i}"] for i in range(6)])
         return np.asarray(a, dtype=np.float32)
 
     def __getitem__(self, index):
@@ -101,19 +95,19 @@ class GalaxeaDataset(torch.utils.data.Dataset):
             img_left = aug["image"]
             img_right = aug["image_right"]
 
-        # get actions from start_ts to start_ts + chunk_size (skipping every 2 frames)
+        # Build left-hand-only actions from start_ts..end_ts (skip every 2)
         end_ts = min(start_ts + self.chunk_size * 2, episode_len)
         action = [self._row_to_action(df.iloc[t]) for t in range(start_ts, end_ts, 2)]
         action = np.stack(action, axis=0)
-        # Left wrist position indices: 0,1,2
-        action[:, 0:3] -= action[0, 0:3]
-        # Right wrist position indices: 9,10,11
-        action[:, 9:12] -= action[0, 9:12]
+
         action_len = action.shape[0]
         action_dim = action.shape[1]
 
-        # qpos is zeros, same dimension as a single action vector
-        qpos = np.zeros((action_dim,), dtype=np.float32)
+        # qpos = the very first action BEFORE subtraction
+        qpos = action[0].copy()
+
+        # Now make positions relative to the first frame (left wrist only: indices 0..2)
+        action[:, 0:3] -= action[0, 0:3]
 
         fixed_len = 400
         padded_action = np.zeros((fixed_len, action_dim), dtype=np.float32)
@@ -147,7 +141,7 @@ class GalaxeaDataset(torch.utils.data.Dataset):
 # TODO: make sure in the dataset normalize is set to False, so that we get raw action values!
 ##################################################################
 ##################################################################
-# dataset_dir = "/iris/projects/humanoid/dataset/recordstart_2025-07-09_22-26-20"
+# dataset_dir = "/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube"
 
 # # Create dataset (relative positions, no normalization yet)
 # ds = GalaxeaDataset(dataset_dir=dataset_dir, chunk_size=45, apply_data_aug = True, normalize=False)
@@ -156,18 +150,18 @@ class GalaxeaDataset(torch.utils.data.Dataset):
 # compute_delta_action_norm_stats_from_dirs(
 #     ds,
 #     chunk_size=45,
-#     stride=2,
+#     # stride=2,
 #     out_path="norm_stats_galaxea_delta.npz",
 #     print_literal=False
 # )
 
-##################################################################
-##################################################################
+#################################################################
+#################################################################
 # UNCOMMENT ME to visualize the dataset!
-##################################################################
-##################################################################
+#################################################################
+#################################################################
 
-# Code to visualize the dataset
+# # Code to visualize the dataset
 # def _to_numpy(arr):
 #     if isinstance(arr, torch.Tensor):
 #         arr = arr.detach().cpu().numpy()
@@ -208,17 +202,19 @@ class GalaxeaDataset(torch.utils.data.Dataset):
 #     end = min(start + num_samples, len(dataset))
 #     for idx in range(start, end):
 #         image_data, qpos, action, is_pad = dataset[idx]
+#         print(qpos.min().item(),  qpos.max().item(),  qpos.mean().item())
+#         print(action.min().item(), action.max().item(), action.mean().item())
 #         _save_pair(image_data, save_dir, f"{idx:06d}")
 #     print(f"Saved {end-start} samples to {save_dir}")
 
 
 # # init your dataset exactly as you do now
-# ds = GalaxeaDataset(dataset_dir="/iris/projects/humanoid/dataset/recordstart_2025-07-09_22-26-20",
+# ds = GalaxeaDataset(dataset_dir="/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube",
 #                      chunk_size=45, apply_data_aug=True, normalize=True)
 
 # # dump a few samples with augmentation ON
 # dump_dataset_images(ds, out_dir="viz_out", num_samples=20, prefix="aug")
 
-# (optional) compare with augmentation OFF
+# # (optional) compare with augmentation OFF
 # ds_noaug = GalaxeaDataset(dataset_dir="/path/to/Galaxea", chunk_size=50, apply_data_aug=False, normalize=True)
 # dump_dataset_images(ds_noaug, out_dir="viz_out", num_samples=20, prefix="orig")

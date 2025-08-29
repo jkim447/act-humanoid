@@ -1,7 +1,7 @@
 """
 usage:
 
-python3 imitate_episodes.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --policy_class ACT --kl_weight 10 --chunk_size 45 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 --num_epochs 90000  --lr 1e-5 --seed 0
+python3 imitate_episodes.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --policy_class ACT --kl_weight 10 --chunk_size 45 --hidden_dim 512 --batch_size 128 --dim_feedforward 3200 --num_epochs 90000  --lr 1e-5 --seed 0
 """
 
 import torch
@@ -53,7 +53,7 @@ def main(args):
     camera_names = task_config['camera_names']
 
     # fixed parameters
-    state_dim = 30 # TODO: change this as needed
+    state_dim = 29 # TODO: change this as needed
     lr_backbone = 1e-5
     backbone = 'resnet18'
     if policy_class == 'ACT':
@@ -342,27 +342,29 @@ def train_bc(train_dataloader, val_dataloader, config):
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
+    val_interval = 40  # evaluate every 40 epochs
     for epoch in tqdm(range(num_epochs)):
         print(f'\nEpoch {epoch}')
         # validation
-        with torch.inference_mode():
-            policy.eval()
-            epoch_dicts = []
-            for batch_idx, data in enumerate(val_dataloader):
-                forward_dict = forward_pass(data, policy)
-                epoch_dicts.append(forward_dict)
-            epoch_summary = compute_dict_mean(epoch_dicts)
-            validation_history.append(epoch_summary)
+        if epoch % val_interval == 0:
+            with torch.inference_mode():
+                policy.eval()
+                epoch_dicts = []
+                for batch_idx, data in enumerate(val_dataloader):
+                    forward_dict = forward_pass(data, policy)
+                    epoch_dicts.append(forward_dict)
+                epoch_summary = compute_dict_mean(epoch_dicts)
+                validation_history.append(epoch_summary)
 
-            epoch_val_loss = epoch_summary['loss']
-            if epoch_val_loss < min_val_loss:
-                min_val_loss = epoch_val_loss
-                best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-        print(f'Val loss:   {epoch_val_loss:.5f}')
-        summary_string = ''
-        for k, v in epoch_summary.items():
-            summary_string += f'{k}: {v.item():.3f} '
-        print(summary_string)
+                epoch_val_loss = epoch_summary['loss']
+                if epoch_val_loss < min_val_loss:
+                    min_val_loss = epoch_val_loss
+                    best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
+            print(f'Val loss:   {epoch_val_loss:.5f}')
+            summary_string = ''
+            for k, v in epoch_summary.items():
+                summary_string += f'{k}: {v.item():.3f} '
+            print(summary_string)
 
         # training
         policy.train()
