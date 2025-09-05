@@ -2,6 +2,7 @@ import os
 import json
 import numpy as np
 import pandas as pd
+from scipy.spatial.transform import Rotation as R
 
 def compute_delta_action_norm_stats_from_dirs(
     ds,
@@ -13,23 +14,18 @@ def compute_delta_action_norm_stats_from_dirs(
     var_name="GALAXEA_DELTA_NORM_STATS",
 ):
     """
-    Collect *all* relative wrist-translation action vectors, stack, then
-    compute per-dimension mean and std (no streaming algorithm).
-
-    For every episode and every anchor timestep s, we:
-      • take frames t = s, s+stride, …, s+chunk_size*stride (clipped to len(df))
-      • build the action vector with ds._row_to_action
-      • subtract anchor left/right wrist positions (indices 0:3 and 9:12)
-
-    Returns
-    -------
-    norm_stats : dict with float32 numpy arrays
+    ...
+    • build the action vector with ds._row_to_action (RIGHT wrist + right_hand)
+    • subtract anchor RIGHT wrist position (indices 0:3)
+    ...
+    qpos = RIGHT wrist pose (pos+6D) + right_actual_hand(20)
     """
+
     action_list = []
     qpos_list = []    
 
     for demo_dir in ds.episode_dirs:
-        csv_path = os.path.join(demo_dir, "ee_pos", "ee_poses_and_hands.csv")
+        csv_path = os.path.join(demo_dir, "ee_hand.csv")
         if not os.path.exists(csv_path):
             continue
         df = pd.read_csv(csv_path)
@@ -38,22 +34,29 @@ def compute_delta_action_norm_stats_from_dirs(
             continue
 
         for s in range(T):
-            anchor_vec   = ds._row_to_action(df.iloc[s])           # (A,)
-            qpos_list.append(anchor_vec.astype(np.float32))     # NEW
+            # build qpos
+            row0 = df.iloc[s]
+            # right wrist pose: pos(3) + quat->6D(6)
+            rq = [row0["right_ori_x"], row0["right_ori_y"], row0["right_ori_z"], row0["right_ori_w"]]
+            Rm = R.from_quat(rq).as_matrix()
+            qpos_parts = [
+                row0["right_pos_x"], row0["right_pos_y"], row0["right_pos_z"],
+                *Rm[:, :2].reshape(-1, order="F").tolist(),
+            ]
+            # right_actual_hand_0..19
+            qpos_parts.extend([row0[f"right_actual_hand_{i}"] for i in range(20)])
+            qpos_list.append(np.asarray(qpos_parts, dtype=np.float32))
 
-            left_anchor  = anchor_vec[0:3]
-            # TODO: restore these lines for bimanual
-            # right_anchor = anchor_vec[9:12] 
+            # keep anchor_vec for deltas (action uses commanded right_hand)
+            anchor_vec = ds._row_to_action(row0)                   # (A,)
+
+            wrist_anchor  = anchor_vec[0:3]
 
             end_ts = min(s + chunk_size * stride, T)               # exclusive
             for t in range(s, end_ts, stride):
                 row_vec = ds._row_to_action(df.iloc[t]).copy()
-
                 # relative translation
-                row_vec[0:3]  -= left_anchor
-                # TODO: restore these lines for bimanual
-                # row_vec[9:12] -= right_anchor
-
+                row_vec[0:3]  -= wrist_anchor
                 action_list.append(row_vec.astype(np.float32))
 
     if not action_list:

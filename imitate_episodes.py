@@ -1,7 +1,7 @@
 """
 usage:
 
-python3 imitate_episodes.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --policy_class ACT --kl_weight 10 --chunk_size 45 --hidden_dim 512 --batch_size 128 --dim_feedforward 3200 --num_epochs 90000  --lr 1e-5 --seed 0
+python3 imitate_episodes.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --policy_class ACT --kl_weight 10 --chunk_size 45 --hidden_dim 512 --batch_size 128 --dim_feedforward 3200 --num_epochs 60000  --lr 1e-5 --seed 0
 """
 
 import torch

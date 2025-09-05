@@ -3,7 +3,8 @@ import torch
 import os
 import h5py
 from torch.utils.data import TensorDataset, DataLoader
-from galaxea_dataset_pick_cube import GalaxeaDataset
+# TODO: change dataset file as needed
+from galaxea_dataset_pick_cube_into_box_right_hand import GalaxeaDataset
 
 import IPython
 e = IPython.embed
@@ -124,8 +125,11 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     # construct dataset and dataloader
     # train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
     # val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
-    dataset_dir = "/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube"
+    # TODO: change the data directory as needed!
+    dataset_dir = "/iris/projects/humanoid/tesollo_dataset/robot_data_0903/red_cube_inbox"
     # make sure normalize is set to False, so that we get raw action values from the dataset
+    # TODO: ensure that the chunk size is set correctly
+    # TODO: expose stride variable here as needed
     train_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=True, normalize=True)
     val_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=False, normalize=True)
 

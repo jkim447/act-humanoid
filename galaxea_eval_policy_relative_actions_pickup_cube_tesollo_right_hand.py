@@ -1,6 +1,6 @@
 """
 usage:
-python3 galaxea_eval_policy_relative_actions_pickup_cube_tesollo.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --kl_weight 10 --hidden_dim 512 --dim_feedforward 3200  --lr 1e-5 --seed 0 --policy_class ACT --num_epochs 1 --num_queries 45
+python3 galaxea_eval_policy_relative_actions_pickup_cube_tesollo_right_hand.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --kl_weight 10 --hidden_dim 512 --dim_feedforward 3200  --lr 1e-5 --seed 0 --policy_class ACT --num_epochs 1 --num_queries 45
 """
 
 import os
@@ -24,36 +24,31 @@ from mpl_toolkits.mplot3d import Axes3D   # noqa: F401  ̶k̶e̶e̶p̶s̶ ̶3̶D
 from scipy.spatial.transform import Rotation as R
 
 stride = 2 # TODO: change as needed
-demo = 91
-idx = 60
-image_path_l = f"/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo{demo}/left/0000{idx}.jpg"
-image_path_r = f"/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo{demo}/right/0000{idx}.jpg"
-csv_path = f"/iris/projects/humanoid/dataset/tesollo_dataset/pick_cube/Demo{demo}/ee_pos/ee_poses_and_hands.csv"
-# Hard-coded frame index from the filename (000150.jpg -> 150)
-TS = int(os.path.splitext(os.path.basename(image_path_l))[0])
+demo = 3
+idx = 90
+DEMO_DIR = f"/iris/projects/humanoid/tesollo_dataset/robot_data_0903/red_cube_inbox/demo_{demo}"
+image_path_l = os.path.join(DEMO_DIR, "left",  f"{idx:06d}.jpg")
+image_path_r = os.path.join(DEMO_DIR, "right", f"{idx:06d}.jpg")
+csv_path     = os.path.join(DEMO_DIR, "ee_hand.csv")
+TS = idx
 norm_stats = np.load("norm_stats_galaxea_delta.npz")
 ckpt_name = "policy_last.ckpt"
 # ckpt_name = "policy_last.ckpt"
 camera_names = ['left', 'right']  # Assuming both cameras are used
 
-def build_left_qpos_from_csv(csv_path: str, ts: int) -> np.ndarray:
-    df = pd.read_csv(csv_path)
+def build_right_qpos_from_csv(csv_path: str, ts: int) -> np.ndarray:
+    df  = pd.read_csv(csv_path)
     row = df.iloc[ts]
 
-    # left wrist pos (3)
-    pos = np.array([row["left_pos_x"], row["left_pos_y"], row["left_pos_z"]], dtype=np.float32)
+    pos = np.array([row["right_pos_x"], row["right_pos_y"], row["right_pos_z"]], dtype=np.float32)
 
-    # left wrist ori quat -> 6D (first two columns of R)
-    lq = np.array([row["left_ori_x"], row["left_ori_y"], row["left_ori_z"], row["left_ori_w"]], dtype=np.float32)
-    lR = R.from_quat(lq).as_matrix()
-    rot6d = lR[:, :2].reshape(-1, order='F').astype(np.float32)  # (6,)
+    rq  = np.array([row["right_ori_x"], row["right_ori_y"], row["right_ori_z"], row["right_ori_w"]], dtype=np.float32)
+    Rm  = R.from_quat(rq).as_matrix()
+    rot6d = Rm[:, :2].reshape(-1, order="F").astype(np.float32)
 
-    # left hand joints (20)
-    fingers = np.array([row[f"left_hand_{i}"] for i in range(20)], dtype=np.float32)
+    fingers_actual = np.array([row[f"right_actual_hand_{i}"] for i in range(20)], dtype=np.float32)
 
-    # 3 + 6 + 20 = 29
-    qpos = np.concatenate([pos, rot6d, fingers], axis=0)
-    return qpos
+    return np.concatenate([pos, rot6d, fingers_actual], axis=0)  # (29,)
 
 
 def get_image():
@@ -107,50 +102,39 @@ def rot6d_to_quat_xyzw(rot6d: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     quats_xyzw = R.from_matrix(R_mats).as_quat()
     return quats_xyzw
 
-def plot_left_wrist_trajectory(pred_actions: torch.Tensor,
-                               csv_path: str,
-                               ts: int,
-                               save_path: str = "wrist_trajectory_left.png"):
+def plot_right_wrist_trajectory(pred_actions: torch.Tensor,
+                                csv_path: str,
+                                ts: int,
+                                save_path: str = "wrist_trajectory_right.png"):
     """
-    pred_actions encodes relative left wrist deltas (Δx,Δy,Δz) w.r.t. the base pose at 'ts'.
-    We convert them to absolute positions and plot them against the GT left wrist trajectory.
+    pred_actions encodes relative RIGHT wrist deltas (Δx,Δy,Δz) w.r.t. the base pose at 'ts'.
     """
-    # predicted deltas (T, 29) -> (T, 3)
     pred_np = pred_actions.squeeze(0).cpu().numpy()
-    dleft = pred_np[:, 0:3]
+    dright  = pred_np[:, 0:3]
 
-    # ground-truth left positions from CSV, aligned to the same stride (step=2)
     df = pd.read_csv(csv_path)
-    T = dleft.shape[0]
-    end = min(ts + T*stride, len(df))   # only advance T steps, not 2*T
-    gt_rows = df.iloc[ts:end:stride]
-    gt_left = gt_rows[["left_pos_x", "left_pos_y", "left_pos_z"]].to_numpy()
-    print(gt_left)
+    T  = dright.shape[0]
+    end = min(ts + T*stride, len(df))
+    gt_rows  = df.iloc[ts:end:stride]
+    gt_right = gt_rows[["right_pos_x", "right_pos_y", "right_pos_z"]].to_numpy()
 
-    # base left wrist pose at ts
-    base_left = df.iloc[ts][["left_pos_x", "left_pos_y", "left_pos_z"]].to_numpy(dtype=float)
+    base_right = df.iloc[ts][["right_pos_x", "right_pos_y", "right_pos_z"]].to_numpy(dtype=float)
 
-    # match lengths
-    L = min(T, gt_left.shape[0])
-    dleft = dleft[:L]
-    gt_left = gt_left[:L]
+    L = min(T, gt_right.shape[0])
+    dright   = dright[:L]
+    gt_right = gt_right[:L]
 
-    # predicted absolute positions
-    pred_left_abs = dleft + base_left[None, :]
+    pred_right_abs = dright + base_right[None, :]
 
-    # 3-D plot (left only)
     fig = plt.figure(figsize=(7, 6))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_title("Left Wrist Trajectory (GT vs Pred)")
-    ax.scatter(gt_left[:, 0], gt_left[:, 1], gt_left[:, 2], label="GT Left", s=20)
-    print(gt_left.shape)
-    ax.scatter(pred_left_abs[:, 0], pred_left_abs[:, 1], pred_left_abs[:, 2], label="Pred Left", marker='^', s=20)
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_title("Right Wrist Trajectory (GT vs Pred)")
+    ax.scatter(gt_right[:,0], gt_right[:,1], gt_right[:,2], label="GT Right", s=20)
+    ax.scatter(pred_right_abs[:,0], pred_right_abs[:,1], pred_right_abs[:,2], label="Pred Right", marker="^", s=20)
     ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-    ax.legend()
-    plt.tight_layout()
-    fig.savefig(save_path, dpi=300)
-    plt.close(fig)
-    print(f"Saved 3-D left trajectory → {save_path}")
+    ax.legend(); plt.tight_layout()
+    fig.savefig(save_path, dpi=300); plt.close(fig)
+    print(f"Saved 3-D right trajectory → {save_path}")
 
 def make_policy(policy_config):
     policy = ACTPolicy(policy_config)
@@ -175,7 +159,7 @@ def eval_act(config, ckpt_name, save_episode=True):
         # @TODO Ke: This time the current state is not zeros, we need to use the actual current state
         # which is left hand wrist position + rotation (6d rot) + 20 joints of the left tesollo hand.
         # See this function (build_left_qpos_from_csv()) to see how to build a 6d rot, very simple 
-        qpos_numpy = build_left_qpos_from_csv(csv_path, TS)
+        qpos_numpy = build_right_qpos_from_csv(csv_path, TS)
         qpos = torch.from_numpy(qpos_numpy).float().cuda().unsqueeze(0)
         # Note, qpos also requires its own normalization now
         qpos_mean = torch.as_tensor(norm_stats["qpos_mean"], device=qpos.device, dtype=qpos.dtype)
@@ -192,49 +176,45 @@ def eval_act(config, ckpt_name, save_episode=True):
         pred_actions = all_actions * action_std + action_mean
 
         # visualize only LEFT GT vs Pred
-        plot_left_wrist_trajectory(pred_actions, csv_path, TS, save_path="wrist_trajectory_left.jpg")
+        plot_right_wrist_trajectory(pred_actions, csv_path, TS, save_path="wrist_trajectory_left.jpg")
 
         # ---- LEFT wrist outputs for deployment (no right-hand slices) ----
         pred_np = pred_actions.squeeze(0).cpu().numpy()  # [T, 29]
-        dleft = pred_np[:, 0:3]                          # Δx,Δy,Δz for left wrist
+        dright = pred_np[:, 0:3]                          # Δx,Δy,Δz for left wrist
 
         # if you have the robot's current left wrist pos (3,), add deltas:
-        current_wrist_left = np.zeros((3,), dtype=np.float32)  # TODO Ke: replace with actual robot reading
-        pred_left_wrist = dleft + current_wrist_left
+        current_wrist_right = np.zeros((3,), dtype=np.float32)  # TODO Ke: replace with actual robot reading
+        pred_right_wrist = dright + current_wrist_right
 
-        # left wrist rotation (6D) -> quaternion
-        left_rot6d = pred_np[:, 3:9]                     # [T, 6]
-        left_quat_xyzw = rot6d_to_quat_xyzw(left_rot6d)  # [T, 4]
-        print(left_quat_xyzw.shape)
+        # right wrist rotation (6D) -> quaternion
+        right_rot6d = pred_np[:, 3:9]                     # [T, 6]
+        right_quat_xyzw = rot6d_to_quat_xyzw(right_rot6d)  # [T, 4]
+        print(right_quat_xyzw.shape)
 
 
         # ---- Quaternion error via SciPy (no custom math) ----
         df = pd.read_csv(csv_path)
-        T_pred = left_quat_xyzw.shape[0]
+        T_pred = right_quat_xyzw.shape[0]
         end = min(TS + T_pred*stride, len(df))
-        gt_q = df.iloc[TS:end:stride][["left_ori_x", "left_ori_y", "left_ori_z", "left_ori_w"]].to_numpy()
+        gt_q = df.iloc[TS:end:stride][["right_ori_x", "right_ori_y", "right_ori_z", "right_ori_w"]].to_numpy()
 
-        L = min(len(left_quat_xyzw), len(gt_q))
-        rel = R.from_quat(left_quat_xyzw[:L]) * R.from_quat(gt_q[:L]).inv()
-        err_deg = np.degrees(rel.magnitude())  # radians -> degrees, in [0, 180]
+        L = min(len(right_quat_xyzw), len(gt_q))
+        rel = R.from_quat(right_quat_xyzw[:L]) * R.from_quat(gt_q[:L]).inv()
+        err_deg = np.degrees(rel.magnitude())
 
-        print(f"[Left wrist quat] N={L} | mean={err_deg.mean():.2f}° | "
-              f"median={np.median(err_deg):.2f}° | p90={np.percentile(err_deg,90):.2f}° | "
-              f"max={err_deg.max():.2f}°")
+        print(f"[Right wrist quat] N={L} | mean={err_deg.mean():.2f}° | "
+            f"median={np.median(err_deg):.2f}° | p90={np.percentile(err_deg,90):.2f}° | "
+            f"max={err_deg.max():.2f}°")
 
-                    # Optional: save per-timestep error plot as an image (cluster-friendly)
         plt.figure(figsize=(7, 3.2))
         plt.plot(err_deg)
         plt.xlabel("Timestep"); plt.ylabel("Angular error (deg)")
-        plt.title("Left Wrist Quaternion Error (SciPy)")
+        plt.title("Right Wrist Quaternion Error (SciPy)")
         plt.tight_layout()
-
-        # Save directly to file (no GUI needed)
-        out_path = "left_quat_error_deg.png"
-        plt.savefig(out_path, dpi=300)
-        plt.close()
+        out_path = "right_quat_error_deg.png"
+        plt.savefig(out_path, dpi=300); plt.close()
         print(f"Saved quaternion error plot → {out_path}")
-        
+                
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

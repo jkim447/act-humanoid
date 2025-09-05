@@ -63,7 +63,7 @@ class GalaxeaDataset(torch.utils.data.Dataset):
         # Left wrist orientation (quat → 6D)
         lq = [row["left_ori_x"], row["left_ori_y"], row["left_ori_z"], row["left_ori_w"]]
         lR = R.from_quat(lq).as_matrix()
-        a.extend(lR[:, :2].reshape(-1).tolist())  # 6D orientation
+        a.extend(lR[:, :2].reshape(-1, order='F').tolist())  # 6D orientation # NOTE: COL MAJOR FLATTEN! TODO
 
         # Left hand joints (20)
         a.extend([row[c] for c in self.left_hand_cols])
