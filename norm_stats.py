@@ -1,179 +1,71 @@
-import os
-import json
-import numpy as np
-import pandas as pd
-from scipy.spatial.transform import Rotation as R
-
-def compute_delta_action_norm_stats_from_dirs(
-    ds,
-    chunk_size=45,          # should match ds.chunk_size
-    stride=2,               # should match the skip in your dataset
-    out_path=None,          # ".npz" or ".json"
+def compute_delta_action_norm_stats_from_dataset_configs(
+    ds_configs,                    # list of (ds, chunk_size, stride)
+    out_path=None,                 # ".npz" or ".json"
     eps=1e-8,
-    print_literal=False,
-    var_name="GALAXEA_DELTA_NORM_STATS",
+    print_literal=True,
+    var_name="COMBINED_DELTA_NORM_STATS",
+    max_episodes_per_dataset=None, # e.g., 100; if None, use all
+    seed=0,
 ):
-    """
-    ...
-    • build the action vector with ds._row_to_action (RIGHT wrist + right_hand)
-    • subtract anchor RIGHT wrist position (indices 0:3)
-    ...
-    qpos = RIGHT wrist pose (pos+6D) + right_actual_hand(20)
-    """
+    import os, json
+    import numpy as np, pandas as pd
 
-    action_list = []
-    qpos_list = []    
+    rng = np.random.default_rng(seed)
 
-    for demo_dir in ds.episode_dirs:
-        csv_path = os.path.join(demo_dir, "ee_hand.csv")
-        if not os.path.exists(csv_path):
-            continue
-        df = pd.read_csv(csv_path)
-        T = len(df)
-        if T == 0:
-            continue
+    all_actions, all_qpos = [], []
 
-        for s in range(T):
-            # build qpos
-            row0 = df.iloc[s]
-            # right wrist pose: pos(3) + quat->6D(6)
-            rq = [row0["right_ori_x"], row0["right_ori_y"], row0["right_ori_z"], row0["right_ori_w"]]
-            Rm = R.from_quat(rq).as_matrix()
-            qpos_parts = [
-                row0["right_pos_x"], row0["right_pos_y"], row0["right_pos_z"],
-                *Rm[:, :2].reshape(-1, order="F").tolist(),
-            ]
-            # right_actual_hand_0..19
-            qpos_parts.extend([row0[f"right_actual_hand_{i}"] for i in range(20)])
-            qpos_list.append(np.asarray(qpos_parts, dtype=np.float32))
+    for ds, chunk_size, stride in ds_configs:
+        episode_dirs = list(getattr(ds, "episode_dirs", []))
+        if max_episodes_per_dataset is not None and len(episode_dirs) > max_episodes_per_dataset:
+            idx = rng.choice(len(episode_dirs), size=max_episodes_per_dataset, replace=False)
+            episode_dirs = [episode_dirs[i] for i in idx]
 
-            # keep anchor_vec for deltas (action uses commanded right_hand)
-            anchor_vec = ds._row_to_action(row0)                   # (A,)
+        for demo_dir in episode_dirs:
+            csv_path = os.path.join(demo_dir, "ee_hand.csv")
+            if not os.path.exists(csv_path):
+                continue
+            df = pd.read_csv(csv_path)
+            T = len(df)
+            if T == 0:
+                continue
 
-            wrist_anchor  = anchor_vec[0:3]
+            for s in range(T):
+                a0_abs = ds._row_to_action(df.iloc[s]).astype(np.float32)
+                all_qpos.append(a0_abs)
 
-            end_ts = min(s + chunk_size * stride, T)               # exclusive
-            for t in range(s, end_ts, stride):
-                row_vec = ds._row_to_action(df.iloc[t]).copy()
-                # relative translation
-                row_vec[0:3]  -= wrist_anchor
-                action_list.append(row_vec.astype(np.float32))
+                wrist_anchor = a0_abs[0:3].copy()
+                end_ts = min(s + chunk_size * stride, T)
+                for t in range(s, end_ts, stride):
+                    a_t = ds._row_to_action(df.iloc[t]).astype(np.float32)
+                    a_t[0:3] -= wrist_anchor
+                    all_actions.append(a_t)
 
-    if not action_list:
-        raise ValueError("No actions collected — check dataset paths.")
+    if not all_actions or not all_qpos:
+        raise ValueError("No actions/qpos collected — check inputs.")
 
-    actions_np   = np.vstack(action_list)   # (N_total, A)
-    action_mean  = actions_np.mean(axis=0).astype(np.float32)
-    action_std   = np.clip(actions_np.std(axis=0, ddof=1), a_min=eps, a_max=None).astype(np.float32)
-
-    # NEW: qpos stats
-    qpos_np    = np.vstack(qpos_list)       # (N_qpos, A)
-    qpos_mean  = qpos_np.mean(axis=0).astype(np.float32)
-    qpos_std   = np.clip(qpos_np.std(axis=0, ddof=1), a_min=eps, a_max=None).astype(np.float32)
+    actions_np = np.vstack(all_actions)
+    qpos_np    = np.vstack(all_qpos)
 
     norm_stats = {
-        "action_mean": action_mean,
-        "action_std":  action_std,
-        "qpos_mean":   qpos_mean,
-        "qpos_std":    qpos_std,
+        "action_mean": actions_np.mean(0).astype(np.float32),
+        "action_std":  np.clip(actions_np.std(0, ddof=1), eps, None).astype(np.float32),
+        "qpos_mean":   qpos_np.mean(0).astype(np.float32),
+        "qpos_std":    np.clip(qpos_np.std(0, ddof=1), eps, None).astype(np.float32),
     }
 
-    # ---- optional save ----
     if out_path is not None:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         if out_path.endswith(".npz"):
-            np.savez_compressed(out_path,
-                                action_mean=norm_stats["action_mean"],
-                                action_std=norm_stats["action_std"],
-                                qpos_mean=norm_stats["qpos_mean"],
-                                qpos_std=norm_stats["qpos_std"])
+            np.savez_compressed(out_path, **norm_stats)
         elif out_path.endswith(".json"):
-            json.dump({k: v.tolist() for k, v in norm_stats.items()},
-                      open(out_path, "w"))
+            json.dump({k: v.tolist() for k, v in norm_stats.items()}, open(out_path, "w"))
         else:
             raise ValueError("out_path must end with .npz or .json")
-        print(f"Saved delta normalization stats to: {out_path}")
+        print(f"Saved combined delta normalization stats to: {out_path}")
 
-    # ---- optional literal ----
     if print_literal:
-            am, sd = norm_stats["action_mean"].tolist(), norm_stats["action_std"].tolist()
-            qm, qs = norm_stats["qpos_mean"].tolist(),  norm_stats["qpos_std"].tolist()
-            print(f"{var_name} = {{")
-            print(f"    'action_mean': np.array({am}, dtype=np.float32),")
-            print(f"    'action_std':  np.array({sd}, dtype=np.float32),")
-            print(f"    'qpos_mean':   np.array({qm}, dtype=np.float32),")
-            print(f"    'qpos_std':    np.array({qs}, dtype=np.float32),")
-            print("}")
-
-    return norm_stats
-
-
-def compute_action_norm_stats_from_dirs(ds, out_path=None, eps=1e-8, print_literal=False, var_name="GALAXEA_NORM_STATS"):
-    """
-    Aggregate actions from all episodes, stack once, then compute per-dim mean/std.
-    Optionally saves to .npz or .json and can print a copy-pasteable Python literal.
-
-    Args:
-        ds: GalaxeaDataset instance (uses ds.episode_dirs and ds._row_to_action)
-        out_path: if given, save to .npz or .json
-        eps: small value to avoid zeros in std
-        print_literal: if True, print a Python variable you can paste in code
-        var_name: variable name used when print_literal=True
-
-    Returns:
-        norm_stats dict with float32 numpy arrays
-    """
-    actions = []
-
-    for demo_dir in ds.episode_dirs:
-        csv_path = os.path.join(demo_dir, "ee_pos", "ee_poses_and_hands.csv")
-        if not os.path.exists(csv_path):
-            continue
-        df = pd.read_csv(csv_path)
-        if len(df) == 0:
-            continue
-        for _, row in df.iterrows():
-            actions.append(ds._row_to_action(row))  # (A,)
-
-    if not actions:
-        raise ValueError("No actions found across episodes.")
-
-    actions_np = np.vstack(actions).astype(np.float32)  # (N, A)
-
-    action_mean = actions_np.mean(axis=0)                     # (A,)
-    action_std  = actions_np.std(axis=0, ddof=1)              # (A,)
-    action_std  = np.clip(action_std, a_min=eps, a_max=None)  # avoid zeros
-
-    norm_stats = {
-        "action_mean": action_mean.astype(np.float32),
-        "action_std":  action_std.astype(np.float32),
-        "qpos_mean":   np.zeros_like(action_mean, dtype=np.float32),
-        "qpos_std":    np.ones_like(action_mean,  dtype=np.float32),
-    }
-
-    # Save if requested
-    if out_path is not None:
-        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        if out_path.endswith(".npz"):
-            np.savez_compressed(out_path,
-                                action_mean=norm_stats["action_mean"],
-                                action_std=norm_stats["action_std"],
-                                qpos_mean=norm_stats["qpos_mean"],
-                                qpos_std=norm_stats["qpos_std"])
-        elif out_path.endswith(".json"):
-            payload = {k: v.tolist() for k, v in norm_stats.items()}
-            with open(out_path, "w") as f:
-                json.dump(payload, f)
-        else:
-            raise ValueError("out_path must end with .npz or .json")
-        print(f"Saved normalization stats to: {out_path}")
-
-    # Optional: print a copy-pasteable Python literal
-    if print_literal:
-        am = norm_stats["action_mean"].tolist()
-        sd = norm_stats["action_std"].tolist()
-        qm = norm_stats["qpos_mean"].tolist()
-        qs = norm_stats["qpos_std"].tolist()
+        am, sd = norm_stats["action_mean"].tolist(), norm_stats["action_std"].tolist()
+        qm, qs = norm_stats["qpos_mean"].tolist(),  norm_stats["qpos_std"].tolist()
         print(f"{var_name} = {{")
         print(f"    'action_mean': np.array({am}, dtype=np.float32),")
         print(f"    'action_std':  np.array({sd}, dtype=np.float32),")
@@ -182,3 +74,76 @@ def compute_action_norm_stats_from_dirs(ds, out_path=None, eps=1e-8, print_liter
         print("}")
 
     return norm_stats
+
+from galaxea_dataset_pick_cube_into_box_right_hand_keypoints_and_joints import GalaxeaDatasetKeypointsJoints
+from human_dataset_pick_cube_into_box_right_hand_keypoints_and_joints import HumanDatasetKeypointsJoints
+##########################################################################
+##########################################################################
+# TODO: MAKE SURE TO SET NORMALIZE PARAMS TO FALSE! SINCE WE ARE COMPUTING STATS HERE
+# TODO: VERITFY THE CHUNKSIZE AND THE STRIDE VALUES!
+##########################################################################
+##########################################################################
+robot_dir1 = "/iris/projects/humanoid/tesollo_dataset/robot_data_0903/red_cube_inbox"
+human_dir1 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_inbox"
+human_dir2 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_outbox"
+human_dir3 = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
+# TODO: change accordingly
+max_episodes_per_dataset = 35
+# TODO: robot chunks are set assuming robot is twice as slow
+robot_chunksize = 45
+robot_stride = 2
+
+human_chunksize = 45
+human_stride = 1
+
+
+apply_data_aug = False
+normalize = False
+
+ds_robot = GalaxeaDatasetKeypointsJoints(
+    dataset_dir=robot_dir1,
+    chunk_size=robot_chunksize,
+    stride=robot_stride,
+    apply_data_aug=apply_data_aug,
+    normalize=normalize,
+    compute_keypoints=True,
+    overlay_keypoints=False   # skeletons drawn before resizing
+)
+
+ds_human1 = HumanDatasetKeypointsJoints(
+        dataset_dir=human_dir1,
+        chunk_size=human_chunksize,
+        stride=human_stride,
+        apply_data_aug=apply_data_aug,   # start with no aug for repeatability
+        normalize=normalize         # raw for debugging
+    )
+    
+ds_human2 = HumanDatasetKeypointsJoints(
+        dataset_dir=human_dir2,
+        chunk_size=human_chunksize,
+        stride=human_stride,
+        apply_data_aug=apply_data_aug,   # start with no aug for repeatability
+        normalize=normalize         # raw for debugging
+    )
+
+ds_human3 = HumanDatasetKeypointsJoints(
+    dataset_dir=human_dir3,
+    chunk_size=human_chunksize,
+    stride=human_stride,
+    apply_data_aug=apply_data_aug,   # start with no aug for repeatability
+    normalize=normalize         # raw for debugging
+)
+
+cfgs = [
+    (ds_robot, robot_chunksize, robot_stride),
+    (ds_human1, human_chunksize, human_stride),
+    (ds_human2, human_chunksize, human_stride),
+    (ds_human3, human_chunksize, human_stride),
+]
+
+stats = compute_delta_action_norm_stats_from_dataset_configs(
+    cfgs,
+    out_path="norm_stats_combined_human_robot_data.npz",
+    max_episodes_per_dataset=max_episodes_per_dataset,  # cap per-dataset; set None to use all
+    seed=42
+)

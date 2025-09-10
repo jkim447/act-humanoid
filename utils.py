@@ -2,7 +2,8 @@ import numpy as np
 import torch
 import os
 import h5py
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, ConcatDataset
+
 # TODO: change dataset file as needed
 from galaxea_dataset_pick_cube_into_box_right_hand import GalaxeaDataset
 
@@ -121,20 +122,65 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     # obtain normalization stats for qpos and action
     # norm_stats = get_norm_stats(dataset_dir, num_episodes)
     norm_stats = None
-
+    from galaxea_dataset_pick_cube_into_box_right_hand_keypoints_and_joints import GalaxeaDatasetKeypointsJoints
+    from human_dataset_pick_cube_into_box_right_hand_keypoints_and_joints import HumanDatasetKeypointsJoints
     # construct dataset and dataloader
-    # train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
-    # val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
-    # TODO: change the data directory as needed!
-    dataset_dir = "/iris/projects/humanoid/tesollo_dataset/robot_data_0903/red_cube_inbox"
-    # make sure normalize is set to False, so that we get raw action values from the dataset
-    # TODO: ensure that the chunk size is set correctly
-    # TODO: expose stride variable here as needed
-    train_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=True, normalize=True)
-    val_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=False, normalize=True)
+    robot_dir1 = "/iris/projects/humanoid/tesollo_dataset/robot_data_0903/red_cube_inbox"
+    human_dir1 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_inbox"
+    human_dir2 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_outbox"
+    human_dir3 = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
+    # TODO: change accordingly
+    max_episodes_per_dataset = 35
+    # TODO: robot chunks are set assuming robot is twice as slow
+    robot_chunksize = 45
+    robot_stride = 2
 
+    human_chunksize = 45
+    human_stride = 1
+
+    apply_data_aug = True # TODO: check this
+    normalize = True 
+
+    ds_robot = GalaxeaDatasetKeypointsJoints(
+        dataset_dir=robot_dir1,
+        chunk_size=robot_chunksize,
+        stride=robot_stride,
+        apply_data_aug=apply_data_aug,
+        normalize=normalize,
+        compute_keypoints=True,
+        overlay_keypoints=False   # skeletons drawn before resizing
+    )
+
+    ds_human1 = HumanDatasetKeypointsJoints(
+            dataset_dir=human_dir1,
+            chunk_size=human_chunksize,
+            stride=human_stride,
+            apply_data_aug=apply_data_aug,   # start with no aug for repeatability
+            normalize=normalize         # raw for debugging
+        )
+        
+    ds_human2 = HumanDatasetKeypointsJoints(
+            dataset_dir=human_dir2,
+            chunk_size=human_chunksize,
+            stride=human_stride,
+            apply_data_aug=apply_data_aug,   # start with no aug for repeatability
+            normalize=normalize         # raw for debugging
+        )
+
+    ds_human3 = HumanDatasetKeypointsJoints(
+        dataset_dir=human_dir3,
+        chunk_size=human_chunksize,
+        stride=human_stride,
+        apply_data_aug=apply_data_aug,   # start with no aug for repeatability
+        normalize=normalize         # raw for debugging
+    )
+    train_dataset = ConcatDataset([ds_robot, ds_human1, ds_human2, ds_human3])
+    
+    # train_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=True, normalize=True)
+    # val_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=False, normalize=True)
+    
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
+    val_dataloader = DataLoader(train_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
 
     is_sim = False
 

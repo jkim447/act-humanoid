@@ -53,7 +53,7 @@ def main(args):
     camera_names = task_config['camera_names']
 
     # fixed parameters
-    state_dim = 29 # TODO: change this as needed
+    state_dim = 44 # TODO: change this as needed
     lr_backbone = 1e-5
     backbone = 'resnet18'
     if policy_class == 'ACT':

@@ -183,7 +183,6 @@ def eval_act(config, ckpt_name, save_episode=True):
         print(qpos.shape, qpos_mean.shape)
         qpos = (qpos - qpos_mean) / qpos_std
 
-
         all_actions = policy(qpos, curr_image)
 
         # unnormalize actions (29-D)
