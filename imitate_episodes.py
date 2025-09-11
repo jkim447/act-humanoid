@@ -385,7 +385,7 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % 100 == 0:
+        if epoch % 20 == 0:
             # ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
             ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
             torch.save(policy.state_dict(), ckpt_path)

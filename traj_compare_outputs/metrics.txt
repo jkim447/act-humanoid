@@ -1,0 +1,4 @@
+Samples compared (timesteps): 180
+Mean orientation error (deg): 20.890
+Median orientation error (deg): 21.806
+90th percentile error (deg): 35.058

@@ -88,7 +88,7 @@ human_dir1 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_inbox"
 human_dir2 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_outbox"
 human_dir3 = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
 # TODO: change accordingly
-max_episodes_per_dataset = 35
+max_episodes_per_dataset = 40
 # TODO: robot chunks are set assuming robot is twice as slow
 robot_chunksize = 45
 robot_stride = 2

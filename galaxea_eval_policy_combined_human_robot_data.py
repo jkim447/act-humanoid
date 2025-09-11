@@ -28,8 +28,8 @@ if not hasattr(np, "bool"):  np.bool  = bool
 from urdfpy import URDF
 
 stride = 2 # TODO: change as needed
-demo = 3
-idx = 90
+demo = 1
+idx = 20
 DEMO_DIR = f"/iris/projects/humanoid/tesollo_dataset/robot_data_0903/red_cube_inbox/demo_{demo}"
 image_path_l = os.path.join(DEMO_DIR, "left",  f"{idx:06d}.jpg")
 image_path_r = os.path.join(DEMO_DIR, "right", f"{idx:06d}.jpg")
@@ -174,39 +174,79 @@ def rot6d_to_quat_xyzw(rot6d: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     quats_xyzw = R.from_matrix(R_mats).as_quat()
     return quats_xyzw
 
+# def plot_right_wrist_trajectory(pred_actions: torch.Tensor,
+#                                 csv_path: str,
+#                                 ts: int,
+#                                 save_path: str = "wrist_trajectory_right.png"):
+#     """
+#     pred_actions encodes relative RIGHT wrist deltas (Δx,Δy,Δz) w.r.t. the base pose at 'ts'.
+#     """
+#     pred_np = pred_actions.squeeze(0).cpu().numpy()
+#     dright  = pred_np[:, 0:3]
+
+#     df = pd.read_csv(csv_path)
+#     T  = dright.shape[0]
+#     end = min(ts + T*stride, len(df))
+#     gt_rows  = df.iloc[ts:end:stride]
+#     gt_right = gt_rows[["right_pos_x", "right_pos_y", "right_pos_z"]].to_numpy()
+
+#     base_right = df.iloc[ts][["right_pos_x", "right_pos_y", "right_pos_z"]].to_numpy(dtype=float)
+
+#     L = min(T, gt_right.shape[0])
+#     dright   = dright[:L]
+#     gt_right = gt_right[:L]
+
+#     pred_right_abs = dright + base_right[None, :]
+
+#     fig = plt.figure(figsize=(7, 6))
+#     ax = fig.add_subplot(111, projection="3d")
+#     ax.set_title("Right Wrist Trajectory (GT vs Pred)")
+#     ax.scatter(gt_right[:,0], gt_right[:,1], gt_right[:,2], label="GT Right", s=20)
+#     ax.scatter(pred_right_abs[:,0], pred_right_abs[:,1], pred_right_abs[:,2], label="Pred Right", marker="^", s=20)
+#     ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+#     ax.legend(); plt.tight_layout()
+#     fig.savefig(save_path, dpi=300); plt.close(fig)
+#     print(f"Saved 3-D right trajectory → {save_path}")
+
 def plot_right_wrist_trajectory(pred_actions: torch.Tensor,
                                 csv_path: str,
                                 ts: int,
                                 save_path: str = "wrist_trajectory_right.png"):
-    """
-    pred_actions encodes relative RIGHT wrist deltas (Δx,Δy,Δz) w.r.t. the base pose at 'ts'.
-    """
+    # camera->base rotation (inverse of base->camera)
+    R_B2C = T_BASE_TO_CAM_LEFT[:3, :3]
+    R_C2B = R_B2C.T
+
     pred_np = pred_actions.squeeze(0).cpu().numpy()
-    dright  = pred_np[:, 0:3]
+    d_cam   = pred_np[:, 0:3]                         # Δ in LEFT-camera frame
+    d_base  = (R_C2B @ d_cam.T).T                     # rotate deltas into base frame
 
     df = pd.read_csv(csv_path)
-    T  = dright.shape[0]
+    T  = d_base.shape[0]
     end = min(ts + T*stride, len(df))
-    gt_rows  = df.iloc[ts:end:stride]
-    gt_right = gt_rows[["right_pos_x", "right_pos_y", "right_pos_z"]].to_numpy()
 
-    base_right = df.iloc[ts][["right_pos_x", "right_pos_y", "right_pos_z"]].to_numpy(dtype=float)
+    # GT right wrist in base frame
+    gt_right = df.iloc[ts:end:stride][["right_pos_x","right_pos_y","right_pos_z"]].to_numpy()
+
+    # starting pose in base frame
+    base_right = df.iloc[ts][["right_pos_x","right_pos_y","right_pos_z"]].to_numpy(dtype=float)
 
     L = min(T, gt_right.shape[0])
-    dright   = dright[:L]
-    gt_right = gt_right[:L]
+    pred_right_abs = d_base[:L] + base_right[None, :]
 
-    pred_right_abs = dright + base_right[None, :]
-
+    # plot
     fig = plt.figure(figsize=(7, 6))
     ax = fig.add_subplot(111, projection="3d")
-    ax.set_title("Right Wrist Trajectory (GT vs Pred)")
-    ax.scatter(gt_right[:,0], gt_right[:,1], gt_right[:,2], label="GT Right", s=20)
-    ax.scatter(pred_right_abs[:,0], pred_right_abs[:,1], pred_right_abs[:,2], label="Pred Right", marker="^", s=20)
+    ax.set_title("Right Wrist Trajectory (GT vs Pred, base frame)")
+    ax.scatter(gt_right[:L,0], gt_right[:L,1], gt_right[:L,2], label="GT", s=20)
+    # ax.scatter(gt_right[0:3``,0], gt_right[0:3,1], gt_right[0:3,2], label="GT", s=20)
+    
+    ax.scatter(pred_right_abs[:,0], pred_right_abs[:,1], pred_right_abs[:,2], label="Pred", marker="^", s=20)
+    # ax.scatter(pred_right_abs[0:3,0], pred_right_abs[0:3,1], pred_right_abs[0:3,2], label="Pred", marker="^", s=20)
     ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
     ax.legend(); plt.tight_layout()
     fig.savefig(save_path, dpi=300); plt.close(fig)
     print(f"Saved 3-D right trajectory → {save_path}")
+
 
 def make_policy(policy_config):
     policy = ACTPolicy(policy_config)
