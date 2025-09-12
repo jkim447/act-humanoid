@@ -29,8 +29,8 @@ e = IPython.embed
 
 # TODO: set if we should reload from a pretrained model
 reload_policy = True
-pretrained_ckpt_path = "ckpt_galaxea/policy_last_robot_only.ckpt"
-policy_save_name = "ckpt_galaxea/policy_last_robot_only_resume.ckpt"
+pretrained_ckpt_path = "ckpt_galaxea/policy_last_robot_all_human_data_09122025.ckpt"
+policy_save_name = "ckpt_galaxea/policy_last_robot_all_human_data_09122025.ckpt"
 
 def main(args):
     set_seed(1)
@@ -58,7 +58,7 @@ def main(args):
     camera_names = task_config['camera_names']
 
     # fixed parameters
-    state_dim = 29 # TODO: change this as needed
+    state_dim = 44 # TODO: change this as needed
     lr_backbone = 1e-5
     backbone = 'resnet18'
     if policy_class == 'ACT':

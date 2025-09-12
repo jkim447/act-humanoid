@@ -14,8 +14,7 @@ if not hasattr(np, "bool"):  np.bool  = bool
 from urdfpy import URDF
 
 # TODO: make sure this is the correct path to norm_stats!
-norm_stats = np.load("norm_stats_robot_data.npz")
-# norm_stats = np.load("norm_stats_combined_human_robot_data.npz")
+norm_stats = np.load("norm_stats_combined_human_robot_data.npz")
 
 # ===================== FK/Projection Constants =====================
 urdf_left_path="/iris/projects/humanoid/act/dg_description/urdf/dg5f_left.urdf"
@@ -38,8 +37,6 @@ T_BASE_TO_CAM_LEFT = np.linalg.inv(np.array([
     [ 0.00720065, -0.48744476, -0.87312414,  0.46063114],
     [ 0., 0., 0., 1. ]
 ], dtype=np.float64))
-
-R_B2C = T_BASE_TO_CAM_LEFT[:3,:3]   # base->cam
 
 # TODO: replace with your actual right extrinsics
 T_BASE_TO_CAM_RIGHT = np.linalg.inv(np.array([
@@ -82,7 +79,7 @@ HAND_LINK_GROUPS = {
 }
 
 def _rot_base_to_cam(R_base):
-    return (R_B2C @ R_base).astype(np.float32)
+    return (T_BASE_TO_CAM_LEFT[:3,:3] @ R_base).astype(np.float32)
 
 def _pose_to_T(pos_xyz, quat_xyzw):
     T = np.eye(4, dtype=np.float64)
@@ -216,7 +213,7 @@ class FKProjector:
         _draw_skeleton(img_right_bgr, rmap_R, self.right_connections, (255,255,0), (200,200,0))
 
 class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
-    def __init__(self, dataset_dir, chunk_size, stride = 1.5, apply_data_aug = True, normalize = True,
+    def __init__(self, dataset_dir, chunk_size, stride = 3, apply_data_aug = True, normalize = True,
                 compute_keypoints=True, overlay_keypoints=False):
         super(GalaxeaDatasetKeypointsJoints).__init__()
         self.dataset_dir = dataset_dir
@@ -232,10 +229,11 @@ class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
         self.compute_keypoints  = compute_keypoints
         self.overlay_keypoints  = overlay_keypoints
         self.action_camera = "left"  # which camera to use for action ref frame
-        self.fk = FKProjector(urdf_left_path, urdf_right_path) #if compute_keypoints else None
-        tip_names = [f"rl_dg_{i}_tip" for i in range(1, 6)]  # matches URDF naming
-        name_to_idx = {n: i for i, n in enumerate(self.fk.right_kpt_names)}
-        self.right_tip_idx = [name_to_idx[n] for n in tip_names if n in name_to_idx]
+        self.fk = FKProjector(urdf_left_path, urdf_right_path) if compute_keypoints else None
+        if self.fk is not None:
+            tip_names = [f"rl_dg_{i}_tip" for i in range(1, 6)]  # matches URDF naming
+            name_to_idx = {n: i for i, n in enumerate(self.fk.right_kpt_names)}
+            self.right_tip_idx = [name_to_idx[n] for n in tip_names if n in name_to_idx]
         
         # collect demo folders: Demo1, Demo2, ..., DemoN
         def _demo_key(name: str):
@@ -261,32 +259,17 @@ class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
 
         self.transforms = A.Compose(
             [
+                # TODO: undo me
                 A.RandomResizedCrop(height=self.img_height, width=self.img_width, scale=(0.95, 1.0), p=0.4),
                 A.Rotate(limit=5, p=0.4),
                 # A.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.55, hue=0.03, p=0.4),
-                A.ColorJitter(brightness=0.8, contrast=0.8, saturation=0.9, hue=0.15, p=0.4),
+                A.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.15, p=0.4),
                 A.CoarseDropout(min_holes=18, max_holes=35, min_height=4, max_height=10,
                                 min_width=4, max_width=10, p=0.4),
                 A.Resize(height=self.img_height, width=self.img_width)
             ],
             additional_targets={"image_right": "image"}
         )
-
-    def _sample_indices(self, T, chunk_size, stride_f):
-        # Max starting index so that the last (chunk_size-1)*stride_f stays in range
-        max_start = int(np.floor(T - (chunk_size - 1) * stride_f - 1))
-        if max_start < 0:
-            # Not enough frames; shorten chunk to what fits
-            chunk_size = max(1, int(np.floor((T - 1) / max(stride_f, 1e-6))) + 1)
-            max_start = 0
-        start = np.random.randint(0, max_start + 1) if max_start > 0 else 0
-
-        idxs_f = start + np.arange(chunk_size, dtype=np.float64) * stride_f
-        idxs = np.clip(np.round(idxs_f).astype(int), 0, T - 1)
-
-        # Ensure non-decreasing indices (avoid going backwards due to rounding)
-        idxs = np.maximum.accumulate(idxs)
-        return idxs
 
     def _world_to_cam3(self, p_world3):
         """Transform a single 3D point from robot base -> left camera frame."""
@@ -298,29 +281,40 @@ class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
         return len(self.episode_dirs)
 
     def _row_to_action(self, row):
-        # Right wrist position in CAMERA frame (3)
+        # --- Right wrist position in CAMERA frame ---
         p_world = np.array([row["right_pos_x"], row["right_pos_y"], row["right_pos_z"]], dtype=np.float64)
-        p_cam = self._world_to_cam3(p_world).astype(np.float32)
+        p_cam = self._world_to_cam3(p_world)  # (3,)
 
-        # Right wrist orientation quat -> 6D in CAMERA frame (6)
+        # --- Right wrist orientation (quat -> 6D), unchanged ---
         rq = [row["right_ori_x"], row["right_ori_y"], row["right_ori_z"], row["right_ori_w"]]
-        R_base = R.from_quat(rq).as_matrix()
-        R_cam  = _rot_base_to_cam(R_base)
-        ori6d  = R_cam[:, :2].reshape(-1, order="F").astype(np.float32)
+        rR = R.from_quat(rq).as_matrix()
+        R_cam = _rot_base_to_cam(rR)
+        ori6d = R_cam[:, :2].reshape(-1, order="F")
 
-        # Right hand command joints (20)
+        # --- Right hand command joints (20), unchanged ---
         joints20 = np.asarray([row[c] for c in self.right_hand_cols], dtype=np.float32)
 
-        # Final action: 3 + 6 + 20 = 29
-        return np.concatenate([p_cam, ori6d, joints20], axis=0)  # (29,)
+        # --- Fingertip positions (5 tips) in CAMERA frame (each is 3D) ---
+        # We need FK for THIS row to get right-hand link 3D in robot base frame; then transform to camera.
+        tips_cam = np.zeros(15, dtype=np.float32)
+        if self.fk is not None and len(self.right_tip_idx) == 5:
+            _, R3D_world = self.fk.compute(row)  # R3D_world: (N_r, 3) in world/base
+            tips = []
+            for idx in self.right_tip_idx:
+                pc = self._world_to_cam3(R3D_world[idx])  # (3,)
+                tips.append(pc.astype(np.float32)) 
+            tips_cam = np.concatenate(tips, axis=0)  # (15,)
+
+        # --- Final action vector: [pos_cam(3), ori6d(6), joints20(20), tips_cam(15)] = 44 dims ---
+        a = np.concatenate([p_cam.astype(np.float32), ori6d.astype(np.float32), joints20, tips_cam], axis=0)
+        return a  # (44,)
 
     def __getitem__(self, index):
         demo_dir = self.episode_dirs[index]
         csv_path = os.path.join(demo_dir, "ee_hand.csv")
         df = pd.read_csv(csv_path)
         episode_len = len(df)
-        idxs = self._sample_indices(T=episode_len, chunk_size=self.chunk_size, stride_f=self.stride)
-        start_ts = int(idxs[0])
+        start_ts = np.random.choice(episode_len)
 
         # Load original images in BGR first (we will draw on these if requested)
         def load_img_bgr(cam_name):
@@ -332,6 +326,17 @@ class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
 
         img_left_bgr  = load_img_bgr("left")
         img_right_bgr = load_img_bgr("right")
+
+        # Compute FK keypoints and project to both cameras
+        keypoints_payload = None
+        if self.compute_keypoints:
+            row = df.iloc[start_ts]
+            L3D, R3D = self.fk.compute(row)
+            proj = self.fk.project_both_cams(L3D, R3D)
+
+            # Optionally overlay on original images BEFORE any resize/Albumentations
+            if self.overlay_keypoints:
+                self.fk.overlay_on_images(img_left_bgr, img_right_bgr, proj)
 
         # Convert BGR to RGB for the augmentation pipeline (drawing already done if enabled)
         img_left_rgb  = cv2.cvtColor(img_left_bgr,  cv2.COLOR_BGR2RGB)
@@ -346,41 +351,41 @@ class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
             # Even without aug, enforce size
             img_left_rgb  = cv2.resize(img_left_rgb,  (self.img_width, self.img_height))
             img_right_rgb = cv2.resize(img_right_rgb, (self.img_width, self.img_height))
-            # pass  # already at desired size
 
-        action = np.stack([ self._row_to_action(df.iloc[i]) for i in idxs ], axis=0).astype(np.float32)
+        # Build action chunk, qpos, padding (unchanged from your code)
+        end_ts = min(start_ts + self.chunk_size * self.stride, episode_len)
+        action = [self._row_to_action(df.iloc[t]) for t in range(start_ts, end_ts, self.stride)]
+        action = np.stack(action, axis=0)
 
         # --- qpos := first absolute action (matches 44 dims) ---
         a_abs0 = action[0].copy().astype(np.float32)  # (44,)
-        # TODO: use true pos!
-        # qpos = a_abs0
-        qpos = np.zeros_like(action[0], dtype=np.float32)
+        qpos = a_abs0
 
         # plot finger tip action trajectory for sanity checking
-        # DEBUG_TRAJ = False # TODO: set to False to disable
-        # if DEBUG_TRAJ:
-        #     STEP = 2  # draw every 2 timesteps; set 5 if you prefer
-        #     tip_colors = [(0,0,255), (0,165,255), (0,255,255), (0,255,0), (255,0,0)]  # BGR: red, orange, yellow, green, blue
+        DEBUG_TRAJ = False # TODO: set to False to disable
+        if DEBUG_TRAJ:
+            STEP = 2  # draw every 2 timesteps; set 5 if you prefer
+            tip_colors = [(0,0,255), (0,165,255), (0,255,255), (0,255,0), (255,0,0)]  # BGR: red, orange, yellow, green, blue
 
-        #     def proj_cam3_to_uv(p3):
-        #         z = max(float(p3[2]), 1e-6)
-        #         u = K_LEFT[0,0]*(float(p3[0])/z) + K_LEFT[0,2]
-        #         v = K_LEFT[1,1]*(float(p3[1])/z) + K_LEFT[1,2]
-        #         return int(round(u)), int(round(v))
+            def proj_cam3_to_uv(p3):
+                z = max(float(p3[2]), 1e-6)
+                u = K_LEFT[0,0]*(float(p3[0])/z) + K_LEFT[0,2]
+                v = K_LEFT[1,1]*(float(p3[1])/z) + K_LEFT[1,2]
+                return int(round(u)), int(round(v))
 
-        #     img_dbg = img_left_bgr.copy()
-        #     h, w = img_dbg.shape[:2]
+            img_dbg = img_left_bgr.copy()
+            h, w = img_dbg.shape[:2]
 
-        #     # draw tips for multiple timesteps
-        #     for t in range(0, action.shape[0], STEP):
-        #         tips_cam = action[t, -15:].reshape(5, 3)  # (5,3) in left-cam frame (absolute by construction)
-        #         for i in range(5):
-        #             u, v = proj_cam3_to_uv(tips_cam[i])
-        #             if 0 <= u < w and 0 <= v < h:
-        #                 cv2.circle(img_dbg, (u, v), 5, tip_colors[i], -1)
+            # draw tips for multiple timesteps
+            for t in range(0, action.shape[0], STEP):
+                tips_cam = action[t, -15:].reshape(5, 3)  # (5,3) in left-cam frame (absolute by construction)
+                for i in range(5):
+                    u, v = proj_cam3_to_uv(tips_cam[i])
+                    if 0 <= u < w and 0 <= v < h:
+                        cv2.circle(img_dbg, (u, v), 5, tip_colors[i], -1)
 
-        #     cv2.imwrite("debug_tips_traj.jpg", img_dbg)
-        #     print("Saved debug_tips_traj.jpg")
+            cv2.imwrite("debug_tips_traj.jpg", img_dbg)
+            print("Saved debug_tips_traj.jpg")
 
         action_len = action.shape[0]
         action_dim = action.shape[1]
@@ -405,8 +410,7 @@ class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
 
         if self.normalize:
             action_data = (action_data - norm_stats["action_mean"]) / norm_stats["action_std"]
-            # TODO: normalize qpos if using real qpos!
-            # qpos_data   = (qpos_data   - norm_stats["qpos_mean"])   / norm_stats["qpos_std"]
+            qpos_data   = (qpos_data   - norm_stats["qpos_mean"])   / norm_stats["qpos_std"]
 
         # Return keypoints payload as an extra item
         return image_data, qpos_data, action_data, is_pad_t, #keypoints_payload
@@ -490,12 +494,12 @@ class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
 
 # ds = GalaxeaDatasetKeypointsJoints(
 #     dataset_dir="/iris/projects/humanoid/tesollo_dataset/robot_data_0903/red_cube_inbox",
-#     chunk_size=45,
+#     chunk_size=20,
 #     apply_data_aug=True,
 #     normalize=False,
-#     compute_keypoints=False, # not needed for now
-#     overlay_keypoints=False)   # skeletons drawn before resizing
-
+#     compute_keypoints=True,
+#     overlay_keypoints=False   # skeletons drawn before resizing
+# )
 
 # loader = DataLoader(ds, batch_size=1, shuffle=True)
 
@@ -504,7 +508,11 @@ class GalaxeaDatasetKeypointsJoints(torch.utils.data.Dataset):
 #     image_data, qpos, action, is_pad = batch
 #     save_images(image_data[0], out_dir, i)
 #     # save_with_tips(image_data[0], action[0], out_dir, i)
-#     # save_with_tips_fullres(image_data[0], action[0], out_dir, i)
+#     save_with_tips_fullres(image_data[0], action[0], out_dir, i)
 #     print("qpos:", qpos.shape, "action:", action.shape, "is_pad:", is_pad.shape)
 #     if i >= 4:   # save first 5 samples only
 #         break
+
+# # (optional) compare with augmentation OFF
+# # ds_noaug = GalaxeaDataset(dataset_dir="/path/to/Galaxea", chunk_size=50, apply_data_aug=False, normalize=True)
+# # dump_dataset_images(ds_noaug, out_dir="viz_out", num_samples=20, prefix="orig")

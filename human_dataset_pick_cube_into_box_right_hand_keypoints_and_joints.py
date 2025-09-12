@@ -7,18 +7,16 @@ if not hasattr(np,"int"):   np.int=int
 if not hasattr(np,"bool"):  np.bool=bool
 
 # TODO: make sure this is the correct path to norm_stats!
-norm_stats = np.load("norm_stats_human_data.npz")
+norm_stats = np.load("norm_stats_combined_human_robot_data.npz")
 
-# norm_stats = np.load("norm_stats_combined_human_robot_data.npz")
-
-# robot base frame w.r.t the camera frame
-T_CAM_TO_BASE_LEFT = np.linalg.inv(np.array([
+# NOTE: the hardcoded array is cam->base; we invert to get base->cam
+T_BASE_TO_CAM_LEFT = np.linalg.inv(np.array([
     [ 0.00692993, -0.87310148,  0.48748926,  0.14062141],
     [-0.99995006, -0.00956093, -0.00290894,  0.03612369],
     [ 0.00720065, -0.48744476, -0.87312414,  0.46063114],
     [ 0., 0., 0., 1. ]
 ], dtype=np.float64))
-R_B2C = T_CAM_TO_BASE_LEFT[:3,:3]
+R_B2C = T_BASE_TO_CAM_LEFT[:3,:3]
 
 # << define K_LEFT for your raw image size >>
 K_LEFT = np.array([[730.2571411132812, 0.0, 637.2598876953125],
@@ -27,7 +25,7 @@ K_LEFT = np.array([[730.2571411132812, 0.0, 637.2598876953125],
 
 def _pos_base_to_cam(pxyz):
     ph = np.array([pxyz[0], pxyz[1], pxyz[2], 1.0], dtype=np.float64)
-    return (T_CAM_TO_BASE_LEFT @ ph)[:3].astype(np.float32)
+    return (T_BASE_TO_CAM_LEFT @ ph)[:3].astype(np.float32)
 
 def _rot_base_to_cam(R_base):
     return (R_B2C @ R_base).astype(np.float32)
@@ -60,7 +58,7 @@ class HumanDatasetKeypointsJoints(Dataset):
             [
                 A.RandomResizedCrop(height=self.img_h, width=self.img_w, scale=(0.95,1.0), p=0.4),
                 A.Rotate(limit=5, p=0.4),
-                A.ColorJitter(brightness=0.8, contrast=0.8, saturation=0.9, hue=0.15, p=0.4),
+                A.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.15, p=0.4),
                 A.CoarseDropout(min_holes=18, max_holes=35, min_height=4, max_height=10,
                                 min_width=4, max_width=10, p=0.4),
                 A.Resize(height=self.img_h, width=self.img_w),
@@ -71,19 +69,17 @@ class HumanDatasetKeypointsJoints(Dataset):
     def __len__(self): return len(self.episode_dirs)
 
     def _row_to_action(self, row):
-        # wrist pos in camera
-        p_cam = _pos_base_to_cam([row[c] for c in self.wrist_xyz])               # (3,)
-
-        # wrist ori -> 6D in camera
+        p_cam = _pos_base_to_cam([row[c] for c in self.wrist_xyz])
         R_base = R.from_quat([row[c] for c in self.wrist_quat]).as_matrix()
         R_cam  = _rot_base_to_cam(R_base)
-        ori6d  = R_cam[:, :2].reshape(-1, order="F").astype(np.float32)          # (6,)
+        ori6d  = R_cam[:,:2].reshape(-1, order="F").astype(np.float32)
+        joints = np.asarray([row[c] for c in self.joint_cols], dtype=np.float32)
+        tips_cam = []
+        for i in range(0, len(self.tip_cols), 3):
+            tips_cam.append(_pos_base_to_cam([row[self.tip_cols[i]], row[self.tip_cols[i+1]], row[self.tip_cols[i+2]]]))
 
-        # 20 joints
-        joints = np.asarray([row[c] for c in self.joint_cols], dtype=np.float32)  # (20,)
-
-        # final action: 3 + 6 + 20 = 29
-        return np.concatenate([p_cam.astype(np.float32), ori6d, joints], axis=0)  # (
+        tips_cam = np.concatenate(tips_cam, axis=0).astype(np.float32)  # (15,)
+        return np.concatenate([p_cam.astype(np.float32), ori6d, joints, tips_cam], axis=0)  # (44,)
 
     def __getitem__(self, idx):
         demo = self.episode_dirs[idx]
@@ -96,7 +92,7 @@ class HumanDatasetKeypointsJoints(Dataset):
             return im  # return None if missing
 
         # ---------- robust frame sampling (retry up to 10 times) ----------
-        MAX_TRIES = 20
+        MAX_TRIES = 10
         imgL_bgr = imgR_bgr = None
         s = None
         for _ in range(MAX_TRIES):
@@ -120,7 +116,29 @@ class HumanDatasetKeypointsJoints(Dataset):
 
         end_ts = min(s + self.chunk_size * self.stride, T)
         action = np.stack([ self._row_to_action(df.iloc[t]) for t in range(s, end_ts, self.stride) ], axis=0).astype(np.float32)
-        qpos = np.zeros_like(action[0], dtype=np.float32)
+
+        qpos = action[0].copy()                 # first absolute action (44)
+
+        # ===== DEBUG: project wrist + 5 tips (t=0) onto RAW LEFT IMAGE =====
+        DEBUG_PROJ = False # TODO: make sure this is set to false during training!
+        if DEBUG_PROJ:
+            def proj_cam3(p3):
+                z = max(float(p3[2]), 1e-6)
+                u = K_LEFT[0,0]*(float(p3[0])/z) + K_LEFT[0,2]
+                v = K_LEFT[1,1]*(float(p3[1])/z) + K_LEFT[1,2]
+                return int(round(u)), int(round(v))
+            vis = imgL_bgr.copy()
+            h, w = vis.shape[:2]
+            # wrist
+            u,v = proj_cam3(qpos[:3])
+            if 0 <= u < w and 0 <= v < h: cv2.circle(vis,(u,v),8,(0,255,0),-1)  # green
+            # tips
+            tips = qpos[-15:].reshape(5,3)
+            for (x,y,z) in tips:
+                u,v = proj_cam3((x,y,z))
+                if 0 <= u < w and 0 <= v < h: cv2.circle(vis,(u,v),6,(0,0,255),-1)  # red
+            cv2.imwrite(os.path.join("/iris/projects/humanoid/act", f"debug_proj_{s:06d}.jpg"), vis)
+            print(f"Wrote debug_proj_{s:06d}.jpg to /iris/projects/humanoid/act")
 
         # delta only on translation
         action[:,0:3] -= action[0,0:3]
@@ -137,8 +155,7 @@ class HumanDatasetKeypointsJoints(Dataset):
 
         if self.normalize:
             action_t = (action_t - norm_stats["action_mean"]) / norm_stats["action_std"]
-            # TODO: normalize qpos if using real qpos!
-            # qpos_t   = (qpos_t   - norm_stats["qpos_mean"])   / norm_stats["qpos_std"]
+            qpos_t   = (qpos_t   - norm_stats["qpos_mean"])   / norm_stats["qpos_std"]
 
         return image_t, qpos_t, action_t, ispad_t
 
@@ -147,7 +164,7 @@ class HumanDatasetKeypointsJoints(Dataset):
 # import os, torch, numpy as np, cv2
 # from torch.utils.data import DataLoader
 
-# --- import your class & K_LEFT from the module where it's defined ---
+# # --- import your class & K_LEFT from the module where it's defined ---
 
 # DATASET_DIR = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
 # OUT_DIR     = "human_ds_vis"
@@ -158,6 +175,7 @@ class HumanDatasetKeypointsJoints(Dataset):
 #     imgs = (images_2chw.permute(0,2,3,1).cpu().numpy() * 255).astype("uint8")
 #     for cam in range(imgs.shape[0]):
 #         cv2.imwrite(os.path.join(out_dir, f"sample{idx}_cam{cam}.jpg"), imgs[cam][:,:,::-1])
+#         print(f"Wrote {os.path.join(out_dir, f'sample{idx}_cam{cam}.jpg')}")
 
 # def main():
 #     ds = HumanDatasetKeypointsJoints(

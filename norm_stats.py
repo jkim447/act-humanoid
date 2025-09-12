@@ -1,10 +1,10 @@
 def compute_delta_action_norm_stats_from_dataset_configs(
-    ds_configs,
-    out_path=None,
+    ds_configs,                    # list of (ds, chunk_size, stride)
+    out_path=None,                 # ".npz" or ".json"
     eps=1e-8,
     print_literal=True,
     var_name="COMBINED_DELTA_NORM_STATS",
-    max_episodes_per_dataset=None,
+    max_episodes_per_dataset=None, # e.g., 100; if None, use all
     seed=0,
 ):
     import os, json
@@ -15,39 +15,40 @@ def compute_delta_action_norm_stats_from_dataset_configs(
     all_actions, all_qpos = [], []
 
     for ds, chunk_size, stride in ds_configs:
+        print("processing next dataset")
         episode_dirs = list(getattr(ds, "episode_dirs", []))
         if max_episodes_per_dataset is not None and len(episode_dirs) > max_episodes_per_dataset:
             idx = rng.choice(len(episode_dirs), size=max_episodes_per_dataset, replace=False)
             episode_dirs = [episode_dirs[i] for i in idx]
 
         for demo_dir in episode_dirs:
-            csv_path = os.path.join(demo_dir, "robot_commands.csv") # TODO: handle csv files robustly across embodiments
-            if not os.path.exists(csv_path):
-                continue
+            # try ee_hand.csv, else robot_commands.csv; skip if neither exists
+            csv1 = os.path.join(demo_dir, "ee_hand.csv")
+            csv2 = os.path.join(demo_dir, "robot_commands.csv")
+            if os.path.exists(csv1):
+                csv_path = csv1
+            elif os.path.exists(csv2):
+                csv_path = csv2
+            else:
+                assert False
+            print(f"  processing {csv_path}")
             df = pd.read_csv(csv_path)
             T = len(df)
             if T == 0:
                 continue
 
-            for s in range(T):
+            for s in range(0, T, n_skip):
                 a0_abs = ds._row_to_action(df.iloc[s]).astype(np.float32)
                 all_qpos.append(a0_abs)
 
                 wrist_anchor = a0_abs[0:3].copy()
-
-                # -------- fractional stride support --------
-                idxs_f = s + np.arange(chunk_size, dtype=np.float64) * stride
-                idxs = np.clip(np.round(idxs_f).astype(int), 0, T - 1) # TODO might have repeated indices near the end
-                idxs = np.maximum.accumulate(idxs)  # enforce non-decreasing
-
-                for t in idxs:
+                end_ts = min(s + chunk_size * stride, T)
+                for t in range(s, end_ts, stride):
                     a_t = ds._row_to_action(df.iloc[t]).astype(np.float32)
                     a_t[0:3] -= wrist_anchor
                     all_actions.append(a_t)
-                # -------------------------------------------
 
     if not all_actions or not all_qpos:
-        print(all_actions, all_qpos)
         raise ValueError("No actions/qpos collected — check inputs.")
 
     actions_np = np.vstack(all_actions)
@@ -59,8 +60,6 @@ def compute_delta_action_norm_stats_from_dataset_configs(
         "qpos_mean":   qpos_np.mean(0).astype(np.float32),
         "qpos_std":    np.clip(qpos_np.std(0, ddof=1), eps, None).astype(np.float32),
     }
-
-    print("action mean shape:", norm_stats["action_mean"].shape, "std shape:", norm_stats["action_std"].shape)
 
     if out_path is not None:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -97,16 +96,18 @@ human_dir1 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_inbox"
 human_dir2 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_outbox"
 human_dir3 = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
 # TODO: change accordingly
-max_episodes_per_dataset = 40
+max_episodes_per_dataset = 45
 # TODO: robot chunks are set assuming robot is twice as slow
-robot_chunksize = 60
-robot_stride = 1.5 
+robot_chunksize = 45
+robot_stride = 2
 
-human_chunksize = 60
+human_chunksize = 45
 human_stride = 1
+
 
 apply_data_aug = False
 normalize = False
+n_skip = 5
 
 ds_robot = GalaxeaDatasetKeypointsJoints(
     dataset_dir=robot_dir1,
@@ -131,9 +132,7 @@ ds_human2 = HumanDatasetKeypointsJoints(
         chunk_size=human_chunksize,
         stride=human_stride,
         apply_data_aug=apply_data_aug,   # start with no aug for repeatability
-        normalize=normalize         # raw f,
-    # (ds_human2, human_chunksize, human_stride),
-    # (ds_human3, human_chunksize, human_stride)or debugging
+        normalize=normalize         # raw for debugging
     )
 
 ds_human3 = HumanDatasetKeypointsJoints(
@@ -148,7 +147,7 @@ cfgs = [
     (ds_robot, robot_chunksize, robot_stride),
     (ds_human1, human_chunksize, human_stride),
     (ds_human2, human_chunksize, human_stride),
-    (ds_human3, human_chunksize, human_stride), # TODO: uncomment to include
+    (ds_human3, human_chunksize, human_stride),
 ]
 
 stats = compute_delta_action_norm_stats_from_dataset_configs(

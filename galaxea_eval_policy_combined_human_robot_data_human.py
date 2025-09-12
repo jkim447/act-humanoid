@@ -37,7 +37,8 @@ image_path_r = os.path.join(DEMO_DIR, "right", f"{idx:06d}.jpg")
 csv_path     = os.path.join(DEMO_DIR, "ee_hand.csv")
 TS = idx
 norm_stats = np.load("norm_stats_combined_human_robot_data.npz")
-ckpt_name = "policy_last.ckpt"
+# ckpt_name = "policy_last.ckpt"
+ckpt_name = "policy_last_robot_all_human_data_09122025.ckpt"
 # ckpt_name = "policy_last.ckpt"
 camera_names = ['left', 'right']  # Assuming both cameras are used
 
@@ -75,6 +76,9 @@ R_EE_TO_HAND_R = R_y @ R_z @ R_right_z
 T_EE_TO_HAND_L = np.eye(4); T_EE_TO_HAND_L[:3,:3] = R_EE_TO_HAND_L; T_EE_TO_HAND_L[:3,3] = np.array([0.00, -0.033, 0.0])
 T_EE_TO_HAND_R = np.eye(4); T_EE_TO_HAND_R[:3,:3] = R_EE_TO_HAND_R; T_EE_TO_HAND_R[:3,3] = np.array([-0.02, 0.02, 0.025])
 
+def _rot_base_to_cam(R_base):
+    return (T_BASE_TO_CAM_LEFT[:3,:3] @ R_base).astype(np.float32)
+
 # reuse transforms from your dataset code
 def _pose_to_T(pos_xyz, quat_xyzw):
     T = np.eye(4, dtype=np.float64)
@@ -98,7 +102,8 @@ def build_right_qpos_from_csv(csv_path: str, ts: int) -> np.ndarray:
     # wrist orientation → rot6d
     rq = [row["right_ori_x"], row["right_ori_y"], row["right_ori_z"], row["right_ori_w"]]
     rR = R.from_quat(rq).as_matrix()
-    ori6d = rR[:, :2].reshape(-1, order="F").astype(np.float32)
+    R_cam = _rot_base_to_cam(rR)
+    ori6d = R_cam[:, :2].reshape(-1, order="F").astype(np.float32)
 
     # joints (20 actual hand joints)
     joints20 = np.array([row[f"right_actual_hand_{i}"] for i in range(20)], dtype=np.float32)
@@ -258,7 +263,17 @@ def eval_act(config, ckpt_name, save_episode=True):
     # Load policy
     ckpt_path = os.path.join(config['ckpt_dir'], ckpt_name)
     policy = make_policy(config['policy_config'])
-    loading_status = policy.load_state_dict(torch.load(ckpt_path))
+
+    ckpt = torch.load(ckpt_path, map_location='cpu')
+    # accept either a raw state_dict or a dict with 'state_dict' key
+    if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+        state_dict = ckpt['state_dict']
+    else:
+        state_dict = ckpt
+    # handle DataParallel prefixes if present
+    cleaned = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    loading_status = policy.load_state_dict(cleaned, strict=False)
+    # loading_status = policy.load_state_dict(torch.load(ckpt_path))
     print(loading_status)
     policy.cuda()
     policy.eval()
