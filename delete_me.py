@@ -1,22 +1,39 @@
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
-def quat_to_rot6d_rowmajor(quat_xyzw):
-    """Your current way: lR[:, :2].reshape(-1) (row-major)."""
-    lR = R.from_quat(quat_xyzw).as_matrix()
-    return lR[:, :2].reshape(-1)  # row-major flatten
+def sample_indices(T, chunk_size, stride_f):
+    # Max starting index so that the last (chunk_size-1)*stride_f stays in range
+    max_start = int(np.floor(T - (chunk_size - 1) * stride_f - 1))
+    if max_start < 0:
+        # Not enough frames; shorten chunk to what fits
+        chunk_size = max(1, int(np.floor((T - 1) / max(stride_f, 1e-6))) + 1)
+        max_start = 0
+    start = np.random.randint(0, max_start + 1) if max_start > 0 else 0
 
-def quat_to_rot6d_colmajor(quat_xyzw):
-    """Correct way: take first two columns, column-major flatten."""
-    lR = R.from_quat(quat_xyzw).as_matrix()
-    return lR[:, :2].reshape(-1, order='F')  # col-major flatten
+    idxs_f = start + np.arange(chunk_size, dtype=np.float64) * stride_f
+    idxs = np.clip(np.round(idxs_f).astype(int), 0, T - 1)
 
-# Example quaternion: 90° about Z axis (should rotate x->y, y->-x)
-quat_xyzw = [0, 0, np.sin(np.pi/4), np.cos(np.pi/4)]  # xyzw
+    # Ensure non-decreasing indices (avoid going backwards due to rounding)
+    idxs = np.maximum.accumulate(idxs)
+    return idxs
 
-row_major_6d = quat_to_rot6d_rowmajor(quat_xyzw)
-col_major_6d = quat_to_rot6d_colmajor(quat_xyzw)
+# ===================== DEMO =====================
+# Create dummy data: [0, 1, 2, ..., 19]
+T = 20
+data = np.arange(T)
 
-print("Rotation matrix:\n", R.from_quat(quat_xyzw).as_matrix())
-print("\nRow-major flatten (your current code):\n", row_major_6d)
-print("Col-major flatten (correct 6D convention):\n", col_major_6d)
+examples = [
+    {"chunk_size": 5, "stride": 1.0},
+    {"chunk_size": 5, "stride": 1.5},
+    {"chunk_size": 8, "stride": 2.0},
+    {"chunk_size": 10, "stride": 2.5},
+    {"chunk_size": 25, "stride": 1.5},   # longer than T (edge case)
+]
+
+for ex in examples:
+    cs, st = ex["chunk_size"], ex["stride"]
+    idxs = sample_indices(T, cs, st)
+    sampled = data[idxs]
+    print(f"chunk_size={cs}, stride={st}")
+    print(" indices:", idxs)
+    print(" values: ", sampled)
+    print("-"*40)

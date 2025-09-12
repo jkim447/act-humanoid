@@ -7,7 +7,9 @@ if not hasattr(np,"int"):   np.int=int
 if not hasattr(np,"bool"):  np.bool=bool
 
 # TODO: make sure this is the correct path to norm_stats!
-norm_stats = np.load("norm_stats_combined_human_robot_data.npz")
+norm_stats = np.load("norm_stats_human_data.npz")
+
+# norm_stats = np.load("norm_stats_combined_human_robot_data.npz")
 
 # robot base frame w.r.t the camera frame
 T_CAM_TO_BASE_LEFT = np.linalg.inv(np.array([
@@ -69,19 +71,19 @@ class HumanDatasetKeypointsJoints(Dataset):
     def __len__(self): return len(self.episode_dirs)
 
     def _row_to_action(self, row):
-        p_cam = _pos_base_to_cam([row[c] for c in self.wrist_xyz])
+        # wrist pos in camera
+        p_cam = _pos_base_to_cam([row[c] for c in self.wrist_xyz])               # (3,)
+
+        # wrist ori -> 6D in camera
         R_base = R.from_quat([row[c] for c in self.wrist_quat]).as_matrix()
         R_cam  = _rot_base_to_cam(R_base)
-        ori6d  = R_cam[:,:2].reshape(-1, order="F").astype(np.float32)
-        joints = np.asarray([row[c] for c in self.joint_cols], dtype=np.float32)
-        tips_cam = []
-        for i in range(0, len(self.tip_cols), 3):
-            # TODO: uncomment me
-            tips_cam.append(_pos_base_to_cam([row[self.tip_cols[i]], row[self.tip_cols[i+1]], row[self.tip_cols[i+2]]]))
-            # tips_cam.append(np.array([row[self.tip_cols[i]], row[self.tip_cols[i+1]], row[self.tip_cols[i+2]]]))
+        ori6d  = R_cam[:, :2].reshape(-1, order="F").astype(np.float32)          # (6,)
 
-        tips_cam = np.concatenate(tips_cam, axis=0).astype(np.float32)  # (15,)
-        return np.concatenate([p_cam.astype(np.float32), ori6d, joints, tips_cam], axis=0)  # (44,)
+        # 20 joints
+        joints = np.asarray([row[c] for c in self.joint_cols], dtype=np.float32)  # (20,)
+
+        # final action: 3 + 6 + 20 = 29
+        return np.concatenate([p_cam.astype(np.float32), ori6d, joints], axis=0)  # (
 
     def __getitem__(self, idx):
         demo = self.episode_dirs[idx]
@@ -118,28 +120,7 @@ class HumanDatasetKeypointsJoints(Dataset):
 
         end_ts = min(s + self.chunk_size * self.stride, T)
         action = np.stack([ self._row_to_action(df.iloc[t]) for t in range(s, end_ts, self.stride) ], axis=0).astype(np.float32)
-
-        qpos = action[0].copy()                 # first absolute action (44)
-
-        # ===== DEBUG: project wrist + 5 tips (t=0) onto RAW LEFT IMAGE =====
-        DEBUG_PROJ = False # TODO: make sure this is set to false during training!
-        if DEBUG_PROJ:
-            def proj_cam3(p3):
-                z = max(float(p3[2]), 1e-6)
-                u = K_LEFT[0,0]*(float(p3[0])/z) + K_LEFT[0,2]
-                v = K_LEFT[1,1]*(float(p3[1])/z) + K_LEFT[1,2]
-                return int(round(u)), int(round(v))
-            vis = imgL_bgr.copy()
-            h, w = vis.shape[:2]
-            # wrist
-            u,v = proj_cam3(qpos[:3])
-            if 0 <= u < w and 0 <= v < h: cv2.circle(vis,(u,v),8,(0,255,0),-1)  # green
-            # tips
-            tips = qpos[-15:].reshape(5,3)
-            for (x,y,z) in tips:
-                u,v = proj_cam3((x,y,z))
-                if 0 <= u < w and 0 <= v < h: cv2.circle(vis,(u,v),6,(0,0,255),-1)  # red
-            cv2.imwrite(os.path.join("/iris/projects/humanoid/act", f"debug_proj_{s:06d}.jpg"), vis)
+        qpos = np.zeros_like(action[0], dtype=np.float32)
 
         # delta only on translation
         action[:,0:3] -= action[0,0:3]
@@ -156,58 +137,59 @@ class HumanDatasetKeypointsJoints(Dataset):
 
         if self.normalize:
             action_t = (action_t - norm_stats["action_mean"]) / norm_stats["action_std"]
-            qpos_t   = (qpos_t   - norm_stats["qpos_mean"])   / norm_stats["qpos_std"]
+            # TODO: normalize qpos if using real qpos!
+            # qpos_t   = (qpos_t   - norm_stats["qpos_mean"])   / norm_stats["qpos_std"]
 
         return image_t, qpos_t, action_t, ispad_t
 
 
 # TODO: uncomment to check the dataset!
-import os, torch, numpy as np, cv2
-from torch.utils.data import DataLoader
+# import os, torch, numpy as np, cv2
+# from torch.utils.data import DataLoader
 
 # --- import your class & K_LEFT from the module where it's defined ---
 
-DATASET_DIR = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
-OUT_DIR     = "human_ds_vis"
-os.makedirs(OUT_DIR, exist_ok=True)
+# DATASET_DIR = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
+# OUT_DIR     = "human_ds_vis"
+# os.makedirs(OUT_DIR, exist_ok=True)
 
-def save_images(images_2chw, out_dir, idx):
-    """images: (2,C,H,W) float[0,1] -> write BGR jpgs"""
-    imgs = (images_2chw.permute(0,2,3,1).cpu().numpy() * 255).astype("uint8")
-    for cam in range(imgs.shape[0]):
-        cv2.imwrite(os.path.join(out_dir, f"sample{idx}_cam{cam}.jpg"), imgs[cam][:,:,::-1])
+# def save_images(images_2chw, out_dir, idx):
+#     """images: (2,C,H,W) float[0,1] -> write BGR jpgs"""
+#     imgs = (images_2chw.permute(0,2,3,1).cpu().numpy() * 255).astype("uint8")
+#     for cam in range(imgs.shape[0]):
+#         cv2.imwrite(os.path.join(out_dir, f"sample{idx}_cam{cam}.jpg"), imgs[cam][:,:,::-1])
 
-def main():
-    ds = HumanDatasetKeypointsJoints(
-        dataset_dir=DATASET_DIR,
-        chunk_size=45,
-        stride=1,
-        apply_data_aug=True,   # start with no aug for repeatability
-        normalize=True         # raw for debugging
-    )
-    print(f"#episodes: {len(ds)}")
-    loader = DataLoader(ds, batch_size=1, shuffle=True, num_workers=0)
+# def main():
+#     ds = HumanDatasetKeypointsJoints(
+#         dataset_dir=DATASET_DIR,
+#         chunk_size=45,
+#         stride=1,
+#         apply_data_aug=True,   # start with no aug for repeatability
+#         normalize=True         # raw for debugging
+#     )
+#     print(f"#episodes: {len(ds)}")
+#     loader = DataLoader(ds, batch_size=1, shuffle=True, num_workers=0)
 
-    for i, batch in enumerate(loader):
-        image_t, qpos_t, action_t, ispad_t = batch  # shapes: (B,2,C,H,W), (B,44), (B,400,44), (B,400)
-        image_2chw = image_t[0]                    # (2,C,H,W)
-        qpos       = qpos_t[0].numpy()             # (44,)
-        action     = action_t[0].numpy()           # (400,44)
-        is_pad     = ispad_t[0].numpy()            # (400,)
+#     for i, batch in enumerate(loader):
+#         image_t, qpos_t, action_t, ispad_t = batch  # shapes: (B,2,C,H,W), (B,44), (B,400,44), (B,400)
+#         image_2chw = image_t[0]                    # (2,C,H,W)
+#         qpos       = qpos_t[0].numpy()             # (44,)
+#         action     = action_t[0].numpy()           # (400,44)
+#         is_pad     = ispad_t[0].numpy()            # (400,)
 
-        # save images
-        save_images(image_2chw, OUT_DIR, i)
+#         # save images
+#         save_images(image_2chw, OUT_DIR, i)
 
-        # prints
-        print(f"[{i}] image {tuple(image_2chw.shape)}  qpos {qpos.shape}  action {action.shape}  is_pad {is_pad.shape}")
-        print("    wrist(cam xyz):", np.round(qpos[:3], 4))
-        tips = qpos[-15:].reshape(5,3)
-        print("    tips(cam xyz) first row:", np.round(tips[0], 4), " | min/max z:", tips[:,2].min(), tips[:,2].max())
-        print("    num valid steps:", int((~is_pad).sum()))
+#         # prints
+#         print(f"[{i}] image {tuple(image_2chw.shape)}  qpos {qpos.shape}  action {action.shape}  is_pad {is_pad.shape}")
+#         print("    wrist(cam xyz):", np.round(qpos[:3], 4))
+#         tips = qpos[-15:].reshape(5,3)
+#         print("    tips(cam xyz) first row:", np.round(tips[0], 4), " | min/max z:", tips[:,2].min(), tips[:,2].max())
+#         print("    num valid steps:", int((~is_pad).sum()))
 
-        # stop after a few
-        if i >= 4:
-            break
+#         # stop after a few
+#         if i >= 4:
+#             break
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

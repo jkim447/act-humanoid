@@ -1,10 +1,10 @@
 def compute_delta_action_norm_stats_from_dataset_configs(
-    ds_configs,                    # list of (ds, chunk_size, stride)
-    out_path=None,                 # ".npz" or ".json"
+    ds_configs,
+    out_path=None,
     eps=1e-8,
     print_literal=True,
     var_name="COMBINED_DELTA_NORM_STATS",
-    max_episodes_per_dataset=None, # e.g., 100; if None, use all
+    max_episodes_per_dataset=None,
     seed=0,
 ):
     import os, json
@@ -21,7 +21,7 @@ def compute_delta_action_norm_stats_from_dataset_configs(
             episode_dirs = [episode_dirs[i] for i in idx]
 
         for demo_dir in episode_dirs:
-            csv_path = os.path.join(demo_dir, "ee_hand.csv")
+            csv_path = os.path.join(demo_dir, "robot_commands.csv") # TODO: handle csv files robustly across embodiments
             if not os.path.exists(csv_path):
                 continue
             df = pd.read_csv(csv_path)
@@ -34,13 +34,20 @@ def compute_delta_action_norm_stats_from_dataset_configs(
                 all_qpos.append(a0_abs)
 
                 wrist_anchor = a0_abs[0:3].copy()
-                end_ts = min(s + chunk_size * stride, T)
-                for t in range(s, end_ts, stride):
+
+                # -------- fractional stride support --------
+                idxs_f = s + np.arange(chunk_size, dtype=np.float64) * stride
+                idxs = np.clip(np.round(idxs_f).astype(int), 0, T - 1) # TODO might have repeated indices near the end
+                idxs = np.maximum.accumulate(idxs)  # enforce non-decreasing
+
+                for t in idxs:
                     a_t = ds._row_to_action(df.iloc[t]).astype(np.float32)
                     a_t[0:3] -= wrist_anchor
                     all_actions.append(a_t)
+                # -------------------------------------------
 
     if not all_actions or not all_qpos:
+        print(all_actions, all_qpos)
         raise ValueError("No actions/qpos collected — check inputs.")
 
     actions_np = np.vstack(all_actions)
@@ -52,6 +59,8 @@ def compute_delta_action_norm_stats_from_dataset_configs(
         "qpos_mean":   qpos_np.mean(0).astype(np.float32),
         "qpos_std":    np.clip(qpos_np.std(0, ddof=1), eps, None).astype(np.float32),
     }
+
+    print("action mean shape:", norm_stats["action_mean"].shape, "std shape:", norm_stats["action_std"].shape)
 
     if out_path is not None:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -90,12 +99,11 @@ human_dir3 = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
 # TODO: change accordingly
 max_episodes_per_dataset = 40
 # TODO: robot chunks are set assuming robot is twice as slow
-robot_chunksize = 45
-robot_stride = 2
+robot_chunksize = 60
+robot_stride = 1.5 
 
-human_chunksize = 45
+human_chunksize = 60
 human_stride = 1
-
 
 apply_data_aug = False
 normalize = False
@@ -123,7 +131,9 @@ ds_human2 = HumanDatasetKeypointsJoints(
         chunk_size=human_chunksize,
         stride=human_stride,
         apply_data_aug=apply_data_aug,   # start with no aug for repeatability
-        normalize=normalize         # raw for debugging
+        normalize=normalize         # raw f,
+    # (ds_human2, human_chunksize, human_stride),
+    # (ds_human3, human_chunksize, human_stride)or debugging
     )
 
 ds_human3 = HumanDatasetKeypointsJoints(
@@ -138,7 +148,7 @@ cfgs = [
     (ds_robot, robot_chunksize, robot_stride),
     (ds_human1, human_chunksize, human_stride),
     (ds_human2, human_chunksize, human_stride),
-    (ds_human3, human_chunksize, human_stride),
+    (ds_human3, human_chunksize, human_stride), # TODO: uncomment to include
 ]
 
 stats = compute_delta_action_norm_stats_from_dataset_configs(

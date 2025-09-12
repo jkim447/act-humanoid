@@ -1,7 +1,7 @@
 """
 usage:
 
-python3 imitate_episodes.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --policy_class ACT --kl_weight 10 --chunk_size 45 --hidden_dim 512 --batch_size 128 --dim_feedforward 3200 --num_epochs 60000  --lr 1e-5 --seed 0
+python3 imitate_episodes.py --task_name sim_transfer_cube_scripted --ckpt_dir ckpt_galaxea --policy_class ACT --kl_weight 10 --chunk_size 45 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 --num_epochs 60000  --lr 1e-5 --seed 0
 """
 
 import torch
@@ -26,6 +26,11 @@ from sim_env import BOX_POSE
 
 import IPython
 e = IPython.embed
+
+# TODO: set if we should reload from a pretrained model
+reload_policy = True
+pretrained_ckpt_path = "ckpt_galaxea/policy_last_robot_only.ckpt"
+policy_save_name = "ckpt_galaxea/policy_last_robot_only_resume.ckpt"
 
 def main(args):
     set_seed(1)
@@ -53,7 +58,7 @@ def main(args):
     camera_names = task_config['camera_names']
 
     # fixed parameters
-    state_dim = 44 # TODO: change this as needed
+    state_dim = 29 # TODO: change this as needed
     lr_backbone = 1e-5
     backbone = 'resnet18'
     if policy_class == 'ACT':
@@ -324,6 +329,33 @@ def forward_pass(data, policy):
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
     return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
 
+def _load_pretrained(policy, optimizer, ckpt_path):
+    ckpt = torch.load(ckpt_path, map_location='cpu')
+
+    # accept either a raw state_dict or a dict with 'state_dict' key
+    if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+        state_dict = ckpt['state_dict']
+    else:
+        state_dict = ckpt
+
+    # handle DataParallel prefixes if present
+    cleaned = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+    missing, unexpected = policy.load_state_dict(cleaned, strict=False)
+    print(f'[pretrained] loaded policy from {ckpt_path}')
+    if missing:
+        print(f'[pretrained] missing keys: {sorted(missing)}')
+    if unexpected:
+        print(f'[pretrained] unexpected keys: {sorted(unexpected)}')
+
+    # restore optimizer if present
+    if isinstance(ckpt, dict) and 'optimizer' in ckpt:
+        optimizer.load_state_dict(ckpt['optimizer'])
+        print(f'[pretrained] loaded optimizer state from {ckpt_path}')
+
+    # also useful to return the epoch number if you want to resume training
+    epoch = ckpt.get('epoch', 0) if isinstance(ckpt, dict) else 0
+    return epoch
 
 def train_bc(train_dataloader, val_dataloader, config):
     num_epochs = config['num_epochs']
@@ -336,7 +368,13 @@ def train_bc(train_dataloader, val_dataloader, config):
 
     policy = make_policy(policy_class, policy_config)
     policy.cuda()
+
     optimizer = make_optimizer(policy_class, policy)
+
+    if reload_policy:
+        start_epoch = _load_pretrained(policy, optimizer, pretrained_ckpt_path)
+        print("the real start epoch is:", start_epoch)
+
 
     train_history = []
     validation_history = []
@@ -385,10 +423,15 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % 20 == 0:
+        if epoch % 30 == 0:
             # ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
-            ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
-            torch.save(policy.state_dict(), ckpt_path)
+            # ckpt_path = os.path.join(ckpt_dir, f'policy_last_09112025.ckpt') # TODO: change the name back!
+            # torch.save(policy.state_dict(), ckpt_path)
+            torch.save({'state_dict': policy.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'epoch': epoch,
+            'train_history': train_history,
+            'validation_history': validation_history}, policy_save_name)
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
 
     ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')

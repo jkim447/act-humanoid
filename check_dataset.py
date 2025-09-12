@@ -15,8 +15,8 @@ save_dir  = "./traj_compare_outputs"
 os.makedirs(save_dir, exist_ok=True)
 
 # robot ~ 2x slower -> your choices
-robot_chunksize, robot_stride = 200, 2
-human_chunksize, human_stride = 200, 1
+robot_chunksize, robot_stride = 60, 1.5
+human_chunksize, human_stride = 60, 1
 
 apply_data_aug = True
 normalize = True
@@ -113,8 +113,8 @@ def geodesic_deg(Ra, Rb):
 
 # ------------------- LOAD ONE SAMPLE EACH -------------------
 # You can change the indices if you want specific episodes
-robot_img, robot_qpos, robot_action_norm, robot_is_pad = ds_robot[1]
-human_img, human_qpos, human_action_norm, human_is_pad = ds_human[1]
+robot_img, robot_qpos, robot_action_norm, robot_is_pad = ds_robot[0]
+human_img, human_qpos, human_action_norm, human_is_pad = ds_human[2]
 
 # ------------------- DENORMALIZE (since normalize=True) -------------------
 stats = np.load(norm_path)

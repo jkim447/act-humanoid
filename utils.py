@@ -129,13 +129,11 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     human_dir1 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_inbox"
     human_dir2 = "/iris/projects/humanoid/hamer/keypoint_human_data_red_outbox"
     human_dir3 = "/iris/projects/humanoid/hamer/keypoint_human_data_wood_inbox"
-    # TODO: change accordingly
-    max_episodes_per_dataset = 35
     # TODO: robot chunks are set assuming robot is twice as slow
-    robot_chunksize = 45
-    robot_stride = 2
+    robot_chunksize = 60
+    robot_stride = 1.5
 
-    human_chunksize = 45
+    human_chunksize = 60
     human_stride = 1
 
     apply_data_aug = True # TODO: check this
@@ -174,8 +172,12 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
         apply_data_aug=apply_data_aug,   # start with no aug for repeatability
         normalize=normalize         # raw for debugging
     )
-    train_dataset = ConcatDataset([ds_robot, ds_human1, ds_human2, ds_human3])
-    
+
+    # TODO: make sure you're using the correct dataset!
+    # train_dataset = ConcatDataset([ds_robot, ds_human1, ds_human2, ds_human3])
+    # train_dataset = ConcatDataset([ds_robot, ds_human1, ds_human2])
+    train_dataset = ConcatDataset([ds_robot])#, ds_human1, ds_human2])
+
     # train_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=True, normalize=True)
     # val_dataset = GalaxeaDataset(dataset_dir= dataset_dir, chunk_size = 45, apply_data_aug=False, normalize=True)
     

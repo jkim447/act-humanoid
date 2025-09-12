@@ -45,7 +45,7 @@ class DETRVAE(nn.Module):
         """
         super().__init__()
         #TODO: change action dim as needed
-        action_dim = 44
+        action_dim = 29
         self.num_queries = num_queries
         self.camera_names = camera_names
         self.transformer = transformer
@@ -229,7 +229,7 @@ def build_encoder(args):
 
 
 def build(args):
-    state_dim = 44 # TODO change state dim as needed
+    state_dim = 29 # TODO change state dim as needed
 
     # From state
     # backbone = None # from state for now, no need for conv nets
